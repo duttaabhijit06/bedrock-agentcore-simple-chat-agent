@@ -1,0 +1,234 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BedrockAgentCore",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock-agentcore:CreateRuntime",
+        "bedrock-agentcore:DeleteRuntime",
+        "bedrock-agentcore:GetRuntime",
+        "bedrock-agentcore:ListRuntimes",
+        "bedrock-agentcore:InvokeAgentRuntime",
+        "bedrock-agentcore:InvokeGateway",
+        "bedrock-agentcore:StopRuntimeSession",
+        "bedrock-agentcore:CreateMemory",
+        "bedrock-agentcore:DeleteMemory",
+        "bedrock-agentcore:GetMemory",
+        "bedrock-agentcore:ListMemories",
+        "bedrock-agentcore:CreateEvent",
+        "bedrock-agentcore:ListEvents",
+        "bedrock-agentcore:RetrieveMemoryRecords"
+      ],
+      "Resource": "arn:aws:bedrock-agentcore:YOUR_REGION:YOUR_ACCOUNT_ID:*"
+    },
+    {
+      "Sid": "BedrockAgentCoreControl",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock-agentcore-control:CreateGateway",
+        "bedrock-agentcore-control:DeleteGateway",
+        "bedrock-agentcore-control:GetGateway",
+        "bedrock-agentcore-control:ListGateways",
+        "bedrock-agentcore-control:CreateGatewayTarget",
+        "bedrock-agentcore-control:DeleteGatewayTarget",
+        "bedrock-agentcore-control:ListGatewayTargets",
+        "bedrock-agentcore-control:CreateMemory",
+        "bedrock-agentcore-control:DeleteMemory",
+        "bedrock-agentcore-control:UpdateMemory",
+        "bedrock-agentcore-control:GetMemory",
+        "bedrock-agentcore-control:ListMemories"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "BedrockModels",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream",
+        "bedrock:ListFoundationModels",
+        "bedrock:ListInferenceProfiles"
+      ],
+      "Resource": [
+        "arn:aws:bedrock:YOUR_REGION::foundation-model/amazon.titan-embed-text-v2:0",
+        "arn:aws:bedrock:YOUR_REGION::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "arn:aws:bedrock:us-*::foundation-model/*"
+      ]
+    },
+    {
+      "Sid": "S3Vectors",
+      "Effect": "Allow",
+      "Action": [
+        "s3vectors:CreateVectorBucket",
+        "s3vectors:DeleteVectorBucket",
+        "s3vectors:ListVectorBuckets",
+        "s3vectors:CreateIndex",
+        "s3vectors:DeleteIndex",
+        "s3vectors:ListIndexes",
+        "s3vectors:PutVectors",
+        "s3vectors:QueryVectors",
+        "s3vectors:GetVectors"
+      ],
+      "Resource": [
+        "arn:aws:s3vectors:YOUR_REGION:YOUR_ACCOUNT_ID:bucket/party-supply-vectors",
+        "arn:aws:s3vectors:YOUR_REGION:YOUR_ACCOUNT_ID:bucket/party-supply-vectors/*"
+      ]
+    },
+    {
+      "Sid": "Lambda",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:CreateFunction",
+        "lambda:UpdateFunctionCode",
+        "lambda:UpdateFunctionConfiguration",
+        "lambda:DeleteFunction",
+        "lambda:GetFunction",
+        "lambda:AddPermission",
+        "lambda:RemovePermission",
+        "lambda:GetPolicy"
+      ],
+      "Resource": "arn:aws:lambda:YOUR_REGION:YOUR_ACCOUNT_ID:function:party-supply-*"
+    },
+    {
+      "Sid": "IAMForLambdaRole",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:GetRole",
+        "iam:PassRole",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy"
+      ],
+      "Resource": [
+        "arn:aws:iam::YOUR_ACCOUNT_ID:role/party-supply-lambda-role",
+        "arn:aws:iam::YOUR_ACCOUNT_ID:role/AgentCore-PartySupply-*",
+        "arn:aws:iam::YOUR_ACCOUNT_ID:role/cdk-*"
+      ]
+    },
+    {
+      "Sid": "CloudFormationForCDK",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:CreateStack",
+        "cloudformation:UpdateStack",
+        "cloudformation:DeleteStack",
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeStackEvents",
+        "cloudformation:GetTemplate",
+        "cloudformation:CreateChangeSet",
+        "cloudformation:DeleteChangeSet",
+        "cloudformation:DescribeChangeSet",
+        "cloudformation:ExecuteChangeSet",
+        "cloudformation:ListStacks"
+      ],
+      "Resource": [
+        "arn:aws:cloudformation:YOUR_REGION:YOUR_ACCOUNT_ID:stack/AgentCore-PartySupply-*",
+        "arn:aws:cloudformation:YOUR_REGION:YOUR_ACCOUNT_ID:stack/CDKToolkit/*"
+      ]
+    },
+    {
+      "Sid": "ECRForContainerBuild",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:CreateRepository",
+        "ecr:DeleteRepository",
+        "ecr:DescribeRepositories",
+        "ecr:GetAuthorizationToken",
+        "ecr:BatchGetImage",
+        "ecr:PutImage",
+        "ecr:InitiateLayerUpload",
+        "ecr:UploadLayerPart",
+        "ecr:CompleteLayerUpload",
+        "ecr:BatchCheckLayerAvailability"
+      ],
+      "Resource": [
+        "arn:aws:ecr:YOUR_REGION:YOUR_ACCOUNT_ID:repository/partysupply/*",
+        "arn:aws:ecr:YOUR_REGION:YOUR_ACCOUNT_ID:repository/cdk-*"
+      ]
+    },
+    {
+      "Sid": "ECRAuthToken",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"
+    },
+    {
+      "Sid": "CodeBuildForContainerBuild",
+      "Effect": "Allow",
+      "Action": [
+        "codebuild:CreateProject",
+        "codebuild:DeleteProject",
+        "codebuild:StartBuild",
+        "codebuild:BatchGetBuilds"
+      ],
+      "Resource": "arn:aws:codebuild:YOUR_REGION:YOUR_ACCOUNT_ID:project/AgentCore-PartySupply-*"
+    },
+    {
+      "Sid": "CloudWatchLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:DeleteLogGroup",
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams",
+        "logs:GetLogEvents",
+        "logs:PutLogEvents"
+      ],
+      "Resource": [
+        "arn:aws:logs:YOUR_REGION:YOUR_ACCOUNT_ID:log-group:/aws/lambda/party-supply-*",
+        "arn:aws:logs:YOUR_REGION:YOUR_ACCOUNT_ID:log-group:/aws/codebuild/AgentCore-PartySupply-*",
+        "arn:aws:logs:YOUR_REGION:YOUR_ACCOUNT_ID:log-group:/aws/bedrock-agentcore/*"
+      ]
+    },
+    {
+      "Sid": "SSMForCDKBootstrap",
+      "Effect": "Allow",
+      "Action": "ssm:GetParameter",
+      "Resource": "arn:aws:ssm:YOUR_REGION:YOUR_ACCOUNT_ID:parameter/cdk-bootstrap/*"
+    },
+    {
+      "Sid": "S3ForCDKAssets",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": [
+        "arn:aws:s3:::cdk-*-assets-YOUR_ACCOUNT_ID-YOUR_REGION",
+        "arn:aws:s3:::cdk-*-assets-YOUR_ACCOUNT_ID-YOUR_REGION/*"
+      ]
+    },
+    {
+      "Sid": "STSForCDKRoles",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": "arn:aws:iam::YOUR_ACCOUNT_ID:role/cdk-*"
+    },
+    {
+      "Sid": "KMSForECR",
+      "Effect": "Allow",
+      "Action": [
+        "kms:CreateKey",
+        "kms:DescribeKey",
+        "kms:ScheduleKeyDeletion",
+        "kms:CreateAlias",
+        "kms:DeleteAlias",
+        "kms:PutKeyPolicy",
+        "kms:GenerateDataKey",
+        "kms:Decrypt"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "YOUR_REGION"
+        }
+      }
+    }
+  ]
+}

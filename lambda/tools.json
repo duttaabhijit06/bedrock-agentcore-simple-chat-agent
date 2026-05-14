@@ -1,0 +1,25 @@
+[
+  {
+    "name": "chat",
+    "description": "Chat with the Party Supply Assistant. Send a message and get a helpful response about party supplies, products, orders, and event planning.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "description": "The user's message or question about party supplies, orders, or event planning"
+        }
+      },
+      "required": ["prompt"]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "response": {
+          "type": "string",
+          "description": "The assistant's response"
+        }
+      }
+    }
+  }
+]

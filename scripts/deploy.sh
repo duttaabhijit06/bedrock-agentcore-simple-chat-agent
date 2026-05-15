@@ -123,7 +123,7 @@ get_gateway_id() {
     --output text 2>/dev/null || echo "None")
   if [ "$gw_id" = "None" ] || [ -z "$gw_id" ]; then
     # Fallback: parse agentcore status output
-    gw_id=$(agentcore status 2>&1 | grep -o '([^)]*' | grep -i 'partysupply' | sed 's/(//' | head -1 || echo "")
+    gw_id=$(npx agentcore status 2>&1 | grep -o '([^)]*' | grep -i 'partysupply' | sed 's/(//' | head -1 || echo "")
   fi
   echo "$gw_id"
 }
@@ -131,7 +131,7 @@ get_gateway_id() {
 get_runtime_arn() {
   # Extract full runtime ARN from agentcore status (handles line wrapping)
   local arn
-  arn=$(agentcore status 2>&1 | tr -d '\n' | grep -o 'arn:aws:bedrock-agentcore:[^)]*' | head -1 || echo "")
+  arn=$(npx agentcore status 2>&1 | tr -d '\n' | grep -o 'arn:aws:bedrock-agentcore:[^)]*' | head -1 || echo "")
   echo "$arn"
 }
 
@@ -285,9 +285,9 @@ step_agent() {
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo "[agent] Deploying agent and MCP gateway to AgentCore Runtime..."
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  if ! command -v agentcore >/dev/null 2>&1; then
-    echo "  Installing AgentCore CLI..."
-    npm install -g @aws/agentcore
+  if ! command -v agentcore >/dev/null 2>&1 && [ ! -f "node_modules/.bin/agentcore" ]; then
+    echo "  Installing dependencies (includes AgentCore CLI)..."
+    npm install
   fi
   # CDK deps must be installed before deploy
   if [ ! -d "agentcore/cdk/node_modules" ]; then
@@ -295,9 +295,9 @@ step_agent() {
     npm install --prefix agentcore/cdk 2>/dev/null
   fi
   echo "  Validating configuration..."
-  agentcore validate
+  npx agentcore validate
   echo "  Deploying (container build via CodeBuild, ~3-5 min)..."
-  agentcore deploy
+  npx agentcore deploy
 
   # Add RAG + Memory permissions to the runtime execution role
   echo "  Adding RAG and Memory permissions to runtime role..."
@@ -481,7 +481,7 @@ step_status() {
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo "[status] Deployment status"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  agentcore status
+  npx agentcore status
 
   GATEWAY_ID=$(get_gateway_id)
   if [ -n "$GATEWAY_ID" ] && [ "$GATEWAY_ID" != "None" ]; then
@@ -552,8 +552,8 @@ step_clean() {
 
   # Destroy AgentCore stack (gateway + runtime)
   echo "  Destroying AgentCore stack..."
-  if command -v agentcore >/dev/null 2>&1; then
-    agentcore destroy 2>/dev/null || echo "  (no stack)"
+  if command -v agentcore >/dev/null 2>&1 || [ -f "node_modules/.bin/agentcore" ]; then
+    npx agentcore destroy 2>/dev/null || echo "  (no stack)"
   fi
 
   # Delete S3 Vectors

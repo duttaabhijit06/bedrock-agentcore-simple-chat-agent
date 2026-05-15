@@ -183,6 +183,10 @@ rm -rf agentcore/.cli
 rm -f chat-ui/.env.local
 rm -f /tmp/party-supply-lambda.zip
 rm -rf lambda/node_modules
+rm -rf node_modules
+rm -rf agent/node_modules
+rm -rf chat-ui/node_modules
+rm -rf agentcore/cdk/node_modules
 
 echo ""
 echo "╔══════════════════════════════════════════════════════════════╗"

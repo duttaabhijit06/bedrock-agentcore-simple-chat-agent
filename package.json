@@ -12,6 +12,7 @@
     "dev:ui": "cd chat-ui && npm run dev"
   },
   "devDependencies": {
+    "@aws/agentcore": "^0.13.1",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
   },

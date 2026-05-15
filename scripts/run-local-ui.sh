@@ -36,13 +36,13 @@ if [ ! -f "chat-ui/.env.local" ] || ! grep -q "VITE_GATEWAY_URL=https://" chat-u
 
   # Try to get gateway ID
   GATEWAY_ID=""
-  if command -v agentcore >/dev/null 2>&1; then
-    GATEWAY_ID=$(agentcore status 2>&1 | grep -o '([^)]*' | grep 'partysupply' | sed 's/(//' | head -1 || echo "")
+  if command -v agentcore >/dev/null 2>&1 || [ -f "node_modules/.bin/agentcore" ]; then
+    GATEWAY_ID=$(npx agentcore status 2>&1 | grep -o '([^)]*' | grep 'partysupply' | sed 's/(//' | head -1 || echo "")
   fi
 
   if [ -z "$GATEWAY_ID" ]; then
     GATEWAY_ID=$(aws bedrock-agentcore-control list-gateways --region "${REGION}" \
-      --query "gateways[?contains(name, 'partysupply')].gatewayId | [0]" \
+      --query "items[?contains(name, 'PartySupply')].gatewayId | [0]" \
       --output text 2>/dev/null || echo "None")
   fi
 

@@ -63,6 +63,8 @@ aws login && export AWS_REGION=us-west-2
 ./scripts/run-local-ui.sh --port 3000
 ```
 
+> **Windows users:** Run all scripts using Git Bash or WSL, not PowerShell directly.
+
 The deploy script handles everything: seed data generation, S3 Vectors, agent runtime, gateway, Lambda, and wiring.
 
 ## Scripts

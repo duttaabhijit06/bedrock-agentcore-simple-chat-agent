@@ -4,6 +4,9 @@ set -euo pipefail
 # ─── Party Supply Chat Agent - Backend Deployment Script ─────────────────────
 # Cross-platform (macOS & Linux) deployment script.
 #
+# Windows: Run this script using Git Bash, WSL, or similar bash environment.
+#          PowerShell is NOT supported directly.
+#
 # Architecture:
 #   UI → AgentCore Gateway (MCP, IAM auth) → Lambda Target → AgentCore Runtime (Strands Agent)
 #
@@ -194,6 +197,26 @@ step_vectors() {
     --index-name "orders-index" \
     --dimension 1024 --distance-metric "cosine" --data-type "float32" \
     --region "${REGION}" 2>/dev/null || echo "  (already exists)"
+
+  echo "  Waiting for indexes to become active..."
+  for idx_name in "products-index" "orders-index"; do
+    retries=0
+    while [ $retries -lt 30 ]; do
+      if aws s3vectors get-index \
+        --vector-bucket-name "${VECTOR_BUCKET_NAME}" \
+        --index-name "${idx_name}" \
+        --region "${REGION}" >/dev/null 2>&1; then
+        echo "    ${idx_name}: ready"
+        break
+      fi
+      retries=$((retries + 1))
+      sleep 2
+    done
+    if [ $retries -eq 30 ]; then
+      echo "    ❌ ${idx_name}: timed out waiting (60s). Check AWS console."
+      exit 1
+    fi
+  done
   echo ""
 }
 

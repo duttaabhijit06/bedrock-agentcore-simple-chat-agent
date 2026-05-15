@@ -147,6 +147,12 @@ print_banner() {
   echo "╚══════════════════════════════════════════════════════════════╝"
   echo ""
 
+  # Install root dependencies if missing
+  if [ ! -d "node_modules" ]; then
+    echo "  Installing root dependencies..."
+    npm install
+  fi
+
   # Auto-generate aws-targets.json from current credentials
   cat > agentcore/aws-targets.json <<EOF
 [

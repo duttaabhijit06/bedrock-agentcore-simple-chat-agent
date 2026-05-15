@@ -123,7 +123,7 @@ get_gateway_id() {
     --output text 2>/dev/null || echo "None")
   if [ "$gw_id" = "None" ] || [ -z "$gw_id" ]; then
     # Fallback: parse agentcore status output
-    gw_id=$(npx agentcore status 2>&1 | grep -o '([^)]*' | grep -i 'partysupply' | sed 's/(//' | head -1 || echo "")
+    gw_id=$(agentcore status 2>&1 | grep -o '([^)]*' | grep -i 'partysupply' | sed 's/(//' | head -1 || echo "")
   fi
   echo "$gw_id"
 }

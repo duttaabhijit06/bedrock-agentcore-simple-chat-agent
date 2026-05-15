@@ -116,13 +116,14 @@ resolve_account() {
 }
 
 get_gateway_id() {
-  # Try API first, fall back to agentcore status output
+  # Response key is 'items' per AWS CLI docs
   local gw_id
   gw_id=$(aws bedrock-agentcore-control list-gateways --region "${REGION}" \
-    --query "gateways[?contains(name, 'partysupply')].gatewayId | [0]" \
+    --query "items[?contains(name, 'PartySupply')].gatewayId | [0]" \
     --output text 2>/dev/null || echo "None")
   if [ "$gw_id" = "None" ] || [ -z "$gw_id" ]; then
-    gw_id=$(agentcore status 2>&1 | grep -o '([^)]*' | grep 'partysupply' | sed 's/(//' | head -1 || echo "")
+    # Fallback: parse agentcore status output
+    gw_id=$(agentcore status 2>&1 | grep -o '([^)]*' | grep -i 'partysupply' | sed 's/(//' | head -1 || echo "")
   fi
   echo "$gw_id"
 }
@@ -202,10 +203,16 @@ step_vectors() {
   for idx_name in "products-index" "orders-index"; do
     retries=0
     while [ $retries -lt 30 ]; do
+      # Try get-index first (faster), fall back to list-indexes (broader CLI support)
       if aws s3vectors get-index \
         --vector-bucket-name "${VECTOR_BUCKET_NAME}" \
         --index-name "${idx_name}" \
         --region "${REGION}" >/dev/null 2>&1; then
+        echo "    ${idx_name}: ready"
+        break
+      elif aws s3vectors list-indexes \
+        --vector-bucket-name "${VECTOR_BUCKET_NAME}" \
+        --region "${REGION}" 2>/dev/null | grep -q "\"indexName\": \"${idx_name}\""; then
         echo "    ${idx_name}: ready"
         break
       fi

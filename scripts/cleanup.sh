@@ -111,7 +111,7 @@ echo "[6/8] Deleting CloudFormation stack: ${STACK_NAME}"
 # Pre-delete Memory resource (can block stack deletion)
 echo "  Pre-deleting Memory resource..."
 MEMORY_ID=$(aws bedrock-agentcore-control list-memories --region "${REGION}" \
-  --query "memories[?contains(name, 'PartySupply')].memoryId | [0]" \
+  --query "items[?contains(name, 'PartySupply')].memoryId | [0]" \
   --output text 2>/dev/null || echo "None")
 if [ -n "$MEMORY_ID" ] && [ "$MEMORY_ID" != "None" ]; then
   aws bedrock-agentcore-control delete-memory \
@@ -152,12 +152,11 @@ fi
 # ─── Step 7: Delete S3 Vectors ───────────────────────────────────────────────
 echo "[7/8] Deleting S3 Vectors..."
 
-# Check if bucket exists
+# Check if bucket exists using list and grep (avoids JMESPath quoting issues across platforms)
 BUCKET_EXISTS=$(aws s3vectors list-vector-buckets --region "${REGION}" \
-  --query 'vectorBuckets[?vectorBucketName==`'"${VECTOR_BUCKET_NAME}"'`].vectorBucketName | [0]' \
-  --output text 2>/dev/null || echo "None")
+  --output json 2>/dev/null | grep -q "\"vectorBucketName\": \"${VECTOR_BUCKET_NAME}\"" && echo "yes" || echo "no")
 
-if [ -n "$BUCKET_EXISTS" ] && [ "$BUCKET_EXISTS" != "None" ]; then
+if [ "$BUCKET_EXISTS" = "yes" ]; then
   echo "  Deleting indexes..."
   aws s3vectors delete-index \
     --vector-bucket-name "${VECTOR_BUCKET_NAME}" \

@@ -5,7 +5,7 @@ COPY package*.json ./
 COPY tsconfig.json ./
 RUN npm ci --legacy-peer-deps
 COPY . .
-RUN npm run build
+RUN node node_modules/typescript/bin/tsc
 
 FROM public.ecr.aws/docker/library/node:20-slim
 WORKDIR /app

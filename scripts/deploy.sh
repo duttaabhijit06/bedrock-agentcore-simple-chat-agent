@@ -297,7 +297,7 @@ step_agent() {
   echo "  Validating configuration..."
   npx agentcore validate
   echo "  Deploying (container build via CodeBuild, ~3-5 min)..."
-  npx agentcore deploy
+  agentcore deploy --yes
 
   # Add RAG + Memory permissions to the runtime execution role
   echo "  Adding RAG and Memory permissions to runtime role..."
@@ -360,9 +360,10 @@ step_lambda() {
 
   # Package Lambda (install deps + zip)
   echo "  Packaging Lambda..."
+  LAMBDA_ZIP="./party-supply-lambda.zip"
   pushd lambda > /dev/null
   npm install --omit=dev 2>/dev/null
-  zip -qr /tmp/party-supply-lambda.zip index.mjs node_modules/ package.json
+  zip -qr "../${LAMBDA_ZIP}" index.mjs node_modules/ package.json
   popd > /dev/null
 
   # Create or update Lambda function
@@ -371,7 +372,7 @@ step_lambda() {
   if aws lambda get-function --function-name "${LAMBDA_NAME}" --region "${REGION}" >/dev/null 2>&1; then
     aws lambda update-function-code \
       --function-name "${LAMBDA_NAME}" \
-      --zip-file fileb:///tmp/party-supply-lambda.zip \
+      --zip-file "fileb://${LAMBDA_ZIP}" \
       --region "${REGION}" > /dev/null
     sleep 5
     aws lambda update-function-configuration \
@@ -385,7 +386,7 @@ step_lambda() {
       --runtime "nodejs20.x" \
       --role "${ROLE_ARN}" \
       --handler "index.handler" \
-      --zip-file fileb:///tmp/party-supply-lambda.zip \
+      --zip-file "fileb://${LAMBDA_ZIP}" \
       --timeout 120 \
       --memory-size 256 \
       --environment "Variables={AGENT_REGION=${REGION},RUNTIME_ARN=${RUNTIME_ARN}}" \
@@ -394,6 +395,9 @@ step_lambda() {
 
   LAMBDA_ARN="arn:aws:lambda:${REGION}:${ACCOUNT_ID}:function:${LAMBDA_NAME}"
   echo "  Lambda ARN: ${LAMBDA_ARN}"
+
+  # Clean up zip file
+  rm -f "${LAMBDA_ZIP}"
 
   # Grant gateway service principal permission to invoke Lambda
   echo "  Adding invoke permissions..."

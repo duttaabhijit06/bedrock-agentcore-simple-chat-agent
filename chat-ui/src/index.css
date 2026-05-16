@@ -324,19 +324,20 @@ body {
 
 /* Markdown content styling */
 .message-text h1, .message-text h2, .message-text h3 {
-  margin: 0.4rem 0 0.2rem;
+  margin: 0.8rem 0 0.5rem;
   font-size: 0.95rem;
   font-weight: 600;
 }
 
 .message-text ul, .message-text ol {
-  margin: 0.2rem 0;
-  padding-left: 1.4rem;
+  margin: 0.5rem 0;
+  padding-left: 1.5rem;
 }
 
 .message-text li {
-  margin: 0.1rem 0;
+  margin: 0.4rem 0;
   font-size: 0.85rem;
+  line-height: 1.5;
 }
 
 .message-text li > p {
@@ -345,9 +346,17 @@ body {
 }
 
 .message-text p {
-  margin: 0.2rem 0;
+  margin: 0.5rem 0;
   font-size: 0.85rem;
-  line-height: 1.4;
+  line-height: 1.5;
+}
+
+.message-text p:first-child {
+  margin-top: 0;
+}
+
+.message-text p:last-child {
+  margin-bottom: 0;
 }
 
 .message-text code {

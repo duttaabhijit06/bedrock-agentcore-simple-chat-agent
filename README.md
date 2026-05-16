@@ -28,6 +28,8 @@ flowchart LR
 - Docker (local testing only; CodeBuild handles remote builds)
 - AgentCore CLI: `npm install -g @aws/agentcore`
 
+> **Note:** npm deprecation warnings (e.g., `glob@10.5.0`) from `@aws/agentcore` are suppressed via `.npmrc` and do not affect functionality.
+
 ### AWS Credentials
 
 1. Sign into the [AWS Console](https://console.aws.amazon.com/) with a role that has the [required permissions](docs/iam-policy.json).

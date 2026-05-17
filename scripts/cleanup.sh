@@ -15,20 +15,40 @@ set -euo pipefail
 #   8. Clean local artifacts
 #
 # Usage:
-#   ./scripts/cleanup.sh
-#   AWS_REGION=us-west-2 ./scripts/cleanup.sh
+#   ./scripts/cleanup.sh [--suffix SUFFIX]
+#   AWS_REGION=us-west-2 ./scripts/cleanup.sh --suffix dev
 
 REGION="${AWS_REGION:-us-west-2}"
-VECTOR_BUCKET_NAME="${VECTOR_BUCKET_NAME:-party-supply-vectors}"
+STACK_SUFFIX="${STACK_SUFFIX:-}"
+DEPLOYMENT_TARGET="default"
+VECTOR_BUCKET_NAME="party-supply-vectors"
 LAMBDA_NAME="party-supply-gateway-handler"
 LAMBDA_ROLE_NAME="party-supply-lambda-role"
-STACK_NAME="AgentCore-PartySupply-default"
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --suffix) STACK_SUFFIX="$2"; shift 2 ;;
+    *)        echo "Unknown option: $1"; exit 1 ;;
+  esac
+done
+
+# Apply suffix to resource names if provided
+if [ -n "$STACK_SUFFIX" ]; then
+  DEPLOYMENT_TARGET="$STACK_SUFFIX"
+  VECTOR_BUCKET_NAME="party-supply-vectors-$STACK_SUFFIX"
+  LAMBDA_NAME="party-supply-gateway-handler-$STACK_SUFFIX"
+  LAMBDA_ROLE_NAME="party-supply-lambda-role-$STACK_SUFFIX"
+fi
+
+STACK_NAME="AgentCore-PartySupply-${DEPLOYMENT_TARGET}"
 
 echo ""
 echo "╔══════════════════════════════════════════════════════════════╗"
 echo "║   Party Supply Chat Agent - Cleanup                         ║"
 echo "╠══════════════════════════════════════════════════════════════╣"
 echo "║  Region: ${REGION}"
+echo "║  Target: ${DEPLOYMENT_TARGET}"
 echo "║  This will delete ALL deployed resources."
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""

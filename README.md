@@ -74,13 +74,32 @@ The deploy script handles everything: seed data generation, S3 Vectors, agent ru
 | Script | Purpose |
 |--------|---------|
 | `./scripts/deploy.sh --all` | Full deployment |
+| `./scripts/deploy.sh --all --suffix dev` | Deploy with 'dev' suffix (multiple stacks in same account) |
 | `./scripts/deploy.sh --agent` | Deploy agent + gateway + memory only |
 | `./scripts/deploy.sh --lambda --gateway-target` | Redeploy Lambda + rewire |
 | `./scripts/deploy.sh --status` | Show status + update UI config |
 | `./scripts/run-local-ui.sh` | Start chat UI locally |
 | `./scripts/cleanup.sh` | Tear down all resources (correct order) |
+| `./scripts/cleanup.sh --suffix dev` | Tear down 'dev' deployment |
 
 Run `./scripts/deploy.sh --help` for all switches.
+
+### Multiple Deployments
+
+Use `--suffix` to deploy multiple independent stacks in the same AWS account:
+
+```bash
+# Deploy dev environment
+./scripts/deploy.sh --all --suffix dev
+
+# Deploy staging environment
+./scripts/deploy.sh --all --suffix staging
+
+# Clean up specific environment
+./scripts/cleanup.sh --suffix dev
+```
+
+Each suffix creates unique resource names (stack, bucket, Lambda, IAM roles).
 
 ## Project Structure
 

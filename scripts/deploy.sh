@@ -41,10 +41,20 @@ set -euo pipefail
 # ─── Configuration ───────────────────────────────────────────────────────────
 
 REGION="${AWS_REGION:-us-west-2}"
-VECTOR_BUCKET_NAME="${VECTOR_BUCKET_NAME:-party-supply-vectors}"
+STACK_SUFFIX="${STACK_SUFFIX:-}"
+DEPLOYMENT_TARGET="default"
+VECTOR_BUCKET_NAME="party-supply-vectors"
 LAMBDA_NAME="party-supply-gateway-handler"
 LAMBDA_ROLE_NAME="party-supply-lambda-role"
 ACCOUNT_ID=""
+
+# Apply suffix to resource names if provided
+if [ -n "$STACK_SUFFIX" ]; then
+  DEPLOYMENT_TARGET="$STACK_SUFFIX"
+  VECTOR_BUCKET_NAME="party-supply-vectors-$STACK_SUFFIX"
+  LAMBDA_NAME="party-supply-gateway-handler-$STACK_SUFFIX"
+  LAMBDA_ROLE_NAME="party-supply-lambda-role-$STACK_SUFFIX"
+fi
 
 # ─── Flags ───────────────────────────────────────────────────────────────────
 
@@ -75,13 +85,15 @@ show_help() {
   echo "  --status           Show deployment status"
   echo "  --clean            Tear down all deployed resources"
   echo "  --region REGION    AWS region (default: us-west-2)"
+  echo "  --suffix SUFFIX    Stack suffix for multiple deployments (e.g., dev, staging)"
   echo "  --help             Show this help message"
   echo ""
   echo "Examples:"
   echo "  ./scripts/deploy.sh --all                       # Full deployment"
+  echo "  ./scripts/deploy.sh --all --suffix dev          # Deploy with 'dev' suffix"
   echo "  ./scripts/deploy.sh --seed --upload             # Regenerate and upload data"
   echo "  ./scripts/deploy.sh --lambda --gateway-target   # Deploy Lambda + wire to gateway"
-  echo "  ./scripts/deploy.sh --clean                     # Tear down everything"
+  echo "  ./scripts/deploy.sh --clean --suffix dev        # Tear down 'dev' deployment"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -96,10 +108,19 @@ while [[ $# -gt 0 ]]; do
     --status)          DO_STATUS=true; NO_FLAGS=false; shift ;;
     --clean)           DO_CLEAN=true; NO_FLAGS=false; shift ;;
     --region)          REGION="$2"; shift 2 ;;
+    --suffix)          STACK_SUFFIX="$2"; shift 2 ;;
     --help|-h)         show_help; exit 0 ;;
     *)                 echo "Unknown option: $1"; show_help; exit 1 ;;
   esac
 done
+
+# Recalculate resource names after parsing arguments
+if [ -n "$STACK_SUFFIX" ]; then
+  DEPLOYMENT_TARGET="$STACK_SUFFIX"
+  VECTOR_BUCKET_NAME="party-supply-vectors-$STACK_SUFFIX"
+  LAMBDA_NAME="party-supply-gateway-handler-$STACK_SUFFIX"
+  LAMBDA_ROLE_NAME="party-supply-lambda-role-$STACK_SUFFIX"
+fi
 
 if [ "$NO_FLAGS" = true ]; then
   DO_ALL=true
@@ -143,6 +164,7 @@ print_banner() {
   echo "╠══════════════════════════════════════════════════════════════╣"
   echo "║  Region:         ${REGION}"
   echo "║  Account:        ${ACCOUNT_ID}"
+  echo "║  Target:         ${DEPLOYMENT_TARGET}"
   echo "║  Vector Bucket:  ${VECTOR_BUCKET_NAME}"
   echo "╚══════════════════════════════════════════════════════════════╝"
   echo ""
@@ -157,7 +179,7 @@ print_banner() {
   cat > agentcore/aws-targets.json <<EOF
 [
   {
-    "name": "default",
+    "name": "${DEPLOYMENT_TARGET}",
     "account": "${ACCOUNT_ID}",
     "region": "${REGION}"
   }
@@ -297,12 +319,12 @@ step_agent() {
   echo "  Validating configuration..."
   npx agentcore validate
   echo "  Deploying (container build via CodeBuild, ~3-5 min)..."
-  agentcore deploy --yes
+  agentcore deploy --target "${DEPLOYMENT_TARGET}" --yes
 
   # Add RAG + Memory permissions to the runtime execution role
   echo "  Adding RAG and Memory permissions to runtime role..."
   RUNTIME_ROLE=$(aws cloudformation describe-stack-resources \
-    --stack-name AgentCore-PartySupply-default --region "${REGION}" \
+    --stack-name "AgentCore-PartySupply-${DEPLOYMENT_TARGET}" --region "${REGION}" \
     --query "StackResources[?contains(LogicalResourceId, 'RuntimeExecutionRole')].PhysicalResourceId | [0]" \
     --output text 2>/dev/null || echo "")
   if [ -n "$RUNTIME_ROLE" ] && [ "$RUNTIME_ROLE" != "None" ]; then
@@ -483,9 +505,9 @@ step_gateway_target() {
 
 step_status() {
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "[status] Deployment status"
+  echo "[status] Deployment status (target: ${DEPLOYMENT_TARGET})"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  npx agentcore status
+  npx agentcore status --target "${DEPLOYMENT_TARGET}"
 
   GATEWAY_ID=$(get_gateway_id)
   if [ -n "$GATEWAY_ID" ] && [ "$GATEWAY_ID" != "None" ]; then

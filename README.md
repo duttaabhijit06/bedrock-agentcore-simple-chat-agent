@@ -26,9 +26,12 @@ flowchart LR
 - AWS CLI v2 ([Install Guide](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html))
 - Node.js 20+ and npm 9+
 - Docker (local testing only; CodeBuild handles remote builds)
-- AgentCore CLI: `npm install -g @aws/agentcore`
+- AgentCore CLI:
+  ```bash
+  npm install -g @aws/agentcore @aws-sdk/region-config-resolver
+  ```
 
-> **Note:** npm deprecation warnings (e.g., `glob@10.5.0`) from `@aws/agentcore` are suppressed via `.npmrc` and do not affect functionality.
+> **Note:** npm deprecation warnings (e.g., `glob@10.5.0`) from `@aws/agentcore` are suppressed via `.npmrc` and do not affect functionality. The `@aws-sdk/region-config-resolver` is required as a peer dependency for the AgentCore CLI.
 
 ### AWS Credentials
 

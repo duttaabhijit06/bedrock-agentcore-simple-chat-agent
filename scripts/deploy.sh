@@ -175,6 +175,12 @@ print_banner() {
     npm install
   fi
 
+  # Ensure AgentCore CLI has the required peer dependency
+  if ! npm list -g @aws-sdk/region-config-resolver >/dev/null 2>&1; then
+    echo "  Installing missing AgentCore CLI dependency..."
+    npm install -g @aws-sdk/region-config-resolver 2>/dev/null || echo "  (install failed, but may not be needed)"
+  fi
+
   # Auto-generate aws-targets.json from current credentials
   cat > agentcore/aws-targets.json <<EOF
 [

@@ -24,6 +24,23 @@ interface Message {
 const GATEWAY_URL = import.meta.env.VITE_GATEWAY_URL || "";
 
 export function ChatWindow() {
+  // Check for gateway URL on mount
+  useEffect(() => {
+    console.log("[Chat] Gateway URL:", GATEWAY_URL);
+    if (!GATEWAY_URL) {
+      console.error("[Chat] VITE_GATEWAY_URL is not configured!");
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: "config-error",
+          role: "system",
+          content: "❌ Configuration Error: VITE_GATEWAY_URL is not set. Please check chat-ui/.env.local file.",
+          timestamp: new Date(),
+        },
+      ]);
+    }
+  }, []);
+
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "welcome",
@@ -83,6 +100,8 @@ export function ChatWindow() {
 
     const startTime = Date.now();
 
+    console.log("[Chat] Starting request to:", GATEWAY_URL);
+
     try {
       const mcpUrl = `${GATEWAY_URL}/mcp`;
       const body = JSON.stringify({
@@ -99,7 +118,9 @@ export function ChatWindow() {
 
       setActivity((prev) => [...prev, "📡 Calling AgentCore Gateway..."]);
 
+      console.log("[Chat] Signing request...");
       const signedHeaders = await signRequest(mcpUrl, "POST", body, credentials);
+      console.log("[Chat] Request signed, sending to:", mcpUrl);
 
       const response = await fetch(mcpUrl, {
         method: "POST",
@@ -110,10 +131,12 @@ export function ChatWindow() {
         body,
       });
 
+      console.log("[Chat] Response received:", response.status, response.statusText);
       setActivity((prev) => [...prev, "🤖 Agent processing (Claude Sonnet 4.5)..."]);
 
       if (!response.ok) {
         const errorText = await response.text();
+        console.error("[Chat] Error response body:", errorText);
         const error: any = new Error(`Gateway error (${response.status}): ${errorText}`);
         error.status = response.status;
         error.statusText = response.statusText;
@@ -175,10 +198,11 @@ export function ChatWindow() {
       await new Promise((r) => setTimeout(r, 800));
       setMessages((prev) => [...prev, assistantMessage]);
     } catch (error: any) {
+      console.error("[Chat] Error occurred:", error);
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "system",
-        content: `${error instanceof Error ? error.message : "Failed to send message"}`,
+        content: `❌ ${error instanceof Error ? error.message : "Failed to send message"}`,
         timestamp: new Date(),
         errorDetails: {
           status: error.status,

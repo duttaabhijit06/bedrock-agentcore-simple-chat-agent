@@ -13,6 +13,12 @@ interface Message {
     memoryRecalled?: string[];
     responseTimeMs?: number;
   };
+  errorDetails?: {
+    status?: number;
+    statusText?: string;
+    responseBody?: string;
+    stack?: string;
+  };
 }
 
 const GATEWAY_URL = import.meta.env.VITE_GATEWAY_URL || "";
@@ -36,6 +42,7 @@ export function ChatWindow() {
     secretAccessKey: "",
     sessionToken: "",
   });
+  const [expandedErrors, setExpandedErrors] = useState<Set<string>>(new Set());
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -107,7 +114,11 @@ export function ChatWindow() {
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`Gateway error (${response.status}): ${errorText}`);
+        const error: any = new Error(`Gateway error (${response.status}): ${errorText}`);
+        error.status = response.status;
+        error.statusText = response.statusText;
+        error.responseBody = errorText;
+        throw error;
       }
 
       const data = await response.json();
@@ -163,12 +174,18 @@ export function ChatWindow() {
       // Brief delay to show activity before clearing
       await new Promise((r) => setTimeout(r, 800));
       setMessages((prev) => [...prev, assistantMessage]);
-    } catch (error) {
+    } catch (error: any) {
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "system",
         content: `${error instanceof Error ? error.message : "Failed to send message"}`,
         timestamp: new Date(),
+        errorDetails: {
+          status: error.status,
+          statusText: error.statusText,
+          responseBody: error.responseBody,
+          stack: error.stack,
+        },
       };
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
@@ -267,6 +284,45 @@ export function ChatWindow() {
                     <span className="meta-badge meta-time">
                       ⏱ {(msg.metadata.responseTimeMs / 1000).toFixed(1)}s
                     </span>
+                  )}
+                </div>
+              )}
+              {msg.errorDetails && (
+                <div className="error-details">
+                  <button
+                    className="error-toggle"
+                    onClick={() => {
+                      const newExpanded = new Set(expandedErrors);
+                      if (expandedErrors.has(msg.id)) {
+                        newExpanded.delete(msg.id);
+                      } else {
+                        newExpanded.add(msg.id);
+                      }
+                      setExpandedErrors(newExpanded);
+                    }}
+                  >
+                    {expandedErrors.has(msg.id) ? "▼" : "▶"} Error Details
+                  </button>
+                  {expandedErrors.has(msg.id) && (
+                    <div className="error-content">
+                      {msg.errorDetails.status && (
+                        <div>
+                          <strong>Status:</strong> {msg.errorDetails.status} {msg.errorDetails.statusText}
+                        </div>
+                      )}
+                      {msg.errorDetails.responseBody && (
+                        <div>
+                          <strong>Response:</strong>
+                          <pre>{msg.errorDetails.responseBody}</pre>
+                        </div>
+                      )}
+                      {msg.errorDetails.stack && (
+                        <div>
+                          <strong>Stack:</strong>
+                          <pre>{msg.errorDetails.stack}</pre>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
               )}

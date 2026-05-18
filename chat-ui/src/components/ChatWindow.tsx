@@ -145,6 +145,7 @@ export function ChatWindow() {
       }
 
       const data = await response.json();
+      console.log("[Chat] Response data:", JSON.stringify(data, null, 2));
       const responseTimeMs = Date.now() - startTime;
 
       let assistantContent = "";
@@ -182,6 +183,8 @@ export function ChatWindow() {
         `✅ Response received (${(responseTimeMs / 1000).toFixed(1)}s)`,
       ]);
 
+      console.log("[Chat] Final assistant content:", assistantContent);
+
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
@@ -196,6 +199,7 @@ export function ChatWindow() {
 
       // Brief delay to show activity before clearing
       await new Promise((r) => setTimeout(r, 800));
+      console.log("[Chat] Adding assistant message to UI");
       setMessages((prev) => [...prev, assistantMessage]);
     } catch (error: any) {
       console.error("[Chat] Error occurred:", error);

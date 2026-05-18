@@ -391,7 +391,20 @@ step_lambda() {
   LAMBDA_ZIP="./party-supply-lambda.zip"
   pushd lambda > /dev/null
   npm install --omit=dev 2>/dev/null
-  zip -qr "../${LAMBDA_ZIP}" index.mjs node_modules/ package.json
+
+  # Use 7z if zip is not available (common on Windows)
+  if command -v zip &> /dev/null; then
+    zip -qr "../${LAMBDA_ZIP}" index.mjs node_modules/ package.json
+  elif [ -f "/c/ProgramData/chocolatey/bin/7z.exe" ]; then
+    /c/ProgramData/chocolatey/bin/7z.exe a -tzip "../${LAMBDA_ZIP}" index.mjs node_modules/ package.json > /dev/null
+  elif command -v 7z &> /dev/null; then
+    7z a -tzip "../${LAMBDA_ZIP}" index.mjs node_modules/ package.json > /dev/null
+  else
+    echo "❌ Error: Neither 'zip' nor '7z' found. Install one of them to continue."
+    popd > /dev/null
+    exit 1
+  fi
+
   popd > /dev/null
 
   # Create or update Lambda function

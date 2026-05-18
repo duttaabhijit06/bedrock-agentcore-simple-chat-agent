@@ -32,20 +32,43 @@ echo ""
 
 # ─── 1. Check Runtime Status ─────────────────────────────────────────────────
 echo "[1/5] Checking runtime status..."
-npx agentcore status --target "${DEPLOYMENT_TARGET}" 2>&1 | grep -E "(PartySupplyAgent|status:|Status:)" || echo "  Could not get runtime status"
+RUNTIME_STATUS=$(npx agentcore status --target "${DEPLOYMENT_TARGET}" 2>&1)
+echo "$RUNTIME_STATUS" | grep -E "(PartySupplyAgent|status:|Status:)" || echo "  Could not get runtime status"
+
+# Extract runtime ID from the ARN
+RUNTIME_ID=$(echo "$RUNTIME_STATUS" | grep -o 'PartySupply_PartySupplyAgent-[a-zA-Z0-9]*' | head -1)
+if [ -n "$RUNTIME_ID" ]; then
+  echo "  Runtime ID: $RUNTIME_ID"
+fi
 echo ""
 
 # ─── 2. Find Runtime Log Group ───────────────────────────────────────────────
 echo "[2/5] Finding runtime log group..."
 export MSYS_NO_PATHCONV=1
-LOG_GROUP=$(aws logs describe-log-groups --region "${REGION}" \
-  --query "logGroups[?contains(logGroupName, 'PartySupply_PartySupplyAgent') && contains(logGroupName, 'DEFAULT')].logGroupName | sort(@) | [-1]" \
-  --output text 2>/dev/null || echo "")
 
-if [ -z "$LOG_GROUP" ] || [ "$LOG_GROUP" = "None" ]; then
-  echo "  ❌ No runtime log group found"
+if [ -n "$RUNTIME_ID" ]; then
+  # Try to find log group matching the runtime ID
+  LOG_GROUP="/aws/bedrock-agentcore/runtimes/${RUNTIME_ID}-DEFAULT"
+
+  # Verify it exists
+  if aws logs describe-log-groups --log-group-name-prefix "$LOG_GROUP" --region "${REGION}" --query "logGroups[0].logGroupName" --output text 2>/dev/null | grep -q "$RUNTIME_ID"; then
+    echo "  ✓ Log group: $LOG_GROUP"
+  else
+    echo "  ⚠️  Expected log group not found, searching for most recent..."
+    LOG_GROUP=$(aws logs describe-log-groups --region "${REGION}" \
+      --log-group-name-prefix "/aws/bedrock-agentcore/runtimes/PartySupply_PartySupplyAgent" \
+      --query "sort_by(logGroups[?contains(logGroupName, 'DEFAULT')], &creationTime)[-1].logGroupName" \
+      --output text 2>/dev/null | tr -d '\n' | grep -v "None" || echo "")
+
+    if [ -z "$LOG_GROUP" ] || [ "$LOG_GROUP" = "None" ]; then
+      echo "  ❌ No runtime log group found"
+    else
+      echo "  ✓ Log group: $LOG_GROUP"
+    fi
+  fi
 else
-  echo "  ✓ Log group: $LOG_GROUP"
+  echo "  ❌ Could not determine runtime ID"
+  LOG_GROUP=""
 fi
 echo ""
 

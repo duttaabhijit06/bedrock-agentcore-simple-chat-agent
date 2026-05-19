@@ -218,11 +218,7 @@ step_seed() {
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo "[seed] Generating seed data with Titan Text Embeddings V2..."
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  if [ -f "seed-data/products-vectors.json" ]; then
-    echo "  Seed data exists. Skipping. (Delete seed-data/*.json to regenerate)"
-  else
-    AWS_REGION="${REGION}" npx --yes tsx scripts/generate-seed-data.ts
-  fi
+  AWS_REGION="${REGION}" npx --yes tsx scripts/generate-seed-data.ts
   echo ""
 }
 
@@ -290,7 +286,7 @@ step_upload() {
     echo "  ❌ Seed data not found. Run with --seed first."; exit 1
   fi
 
-  echo "  Uploading product vectors..."
+  echo "  Uploading product vectors (will overwrite existing)..."
   node --input-type=module -e "
 import { readFileSync } from 'fs';
 import { S3VectorsClient, PutVectorsCommand } from '@aws-sdk/client-s3vectors';

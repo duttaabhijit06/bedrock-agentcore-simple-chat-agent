@@ -345,19 +345,6 @@ step_agent() {
     && echo "  ECR repository deleted." \
     || echo "  (ECR repo not found or already deleted)"
 
-  # Check stack status and force-delete if in failed state
-  STACK_NAME="AgentCore-PartySupply-${DEPLOYMENT_TARGET}"
-  STACK_STATUS=$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --region "${REGION}" \
-    --query "Stacks[0].StackStatus" --output text 2>/dev/null || echo "DOES_NOT_EXIST")
-
-  if [[ "$STACK_STATUS" == *"FAILED"* ]] || [[ "$STACK_STATUS" == *"ROLLBACK_COMPLETE"* ]]; then
-    echo "  Stack in ${STACK_STATUS} state. Deleting before redeploy..."
-    aws cloudformation delete-stack --stack-name "${STACK_NAME}" --region "${REGION}" 2>/dev/null || true
-    echo "  Waiting for stack deletion..."
-    aws cloudformation wait stack-delete-complete --stack-name "${STACK_NAME}" --region "${REGION}" 2>/dev/null || true
-    echo "  Stack deleted."
-  fi
-
   # Update agentcore.json with current vector bucket name and region
   echo "  Updating agentcore.json with target-specific config..."
   node -e "

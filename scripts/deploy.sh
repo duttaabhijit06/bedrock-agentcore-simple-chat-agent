@@ -398,6 +398,39 @@ step_agent() {
         ]
       }" 2>/dev/null && echo "  Runtime role updated." || echo "  (could not update runtime role)"
   fi
+
+  # Update runtime MEMORY_NAME env var with actual memory ID (it has a random suffix)
+  echo "  Updating runtime MEMORY_NAME with actual memory ID..."
+  MEMORY_ID=$(node -e "
+    try {
+      const s = require('./agentcore/.cli/deployed-state.json');
+      const t = s.targets['${DEPLOYMENT_TARGET}'];
+      const m = t && t.resources && t.resources.memories;
+      const key = Object.keys(m || {})[0];
+      console.log(m[key].memoryId || '');
+    } catch(e) {}
+  " 2>/dev/null || echo "")
+
+  RUNTIME_ID=$(node -e "
+    try {
+      const s = require('./agentcore/.cli/deployed-state.json');
+      const t = s.targets['${DEPLOYMENT_TARGET}'];
+      const r = t && t.resources && t.resources.runtimes;
+      const key = Object.keys(r || {})[0];
+      console.log(r[key].runtimeId || '');
+    } catch(e) {}
+  " 2>/dev/null || echo "")
+
+  if [ -n "$MEMORY_ID" ] && [ -n "$RUNTIME_ID" ]; then
+    echo "    Memory ID: ${MEMORY_ID}"
+    aws bedrock-agentcore-control update-agent-runtime \
+      --agent-runtime-id "${RUNTIME_ID}" \
+      --region "${REGION}" \
+      --environment-variables "AWS_REGION=${REGION},VECTOR_BUCKET_NAME=${VECTOR_BUCKET_NAME},MEMORY_NAME=${MEMORY_ID}" \
+      >/dev/null 2>&1 && echo "    ✓ Runtime env vars updated" || echo "    (could not update runtime env vars - may need manual update)"
+  else
+    echo "    (could not find memory or runtime ID)"
+  fi
   echo ""
 }
 

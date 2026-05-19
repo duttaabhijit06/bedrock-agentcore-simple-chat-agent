@@ -76,6 +76,11 @@ if [ -n "$RUNTIME_ID" ]; then
         try{const e=JSON.parse(d);console.log(e.VECTOR_BUCKET_NAME||'NOT_SET');}catch(e){console.log('UNKNOWN');}
       });" 2>/dev/null || echo "UNKNOWN")
 
+    CONFIGURED_MEMORY=$(echo "$RUNTIME_ENV" | node -e "
+      let d=''; process.stdin.on('data',c=>d+=c).on('end',()=>{
+        try{const e=JSON.parse(d);console.log(e.MEMORY_NAME||'NOT_SET');}catch(e){console.log('UNKNOWN');}
+      });" 2>/dev/null || echo "UNKNOWN")
+
     echo "  VECTOR_BUCKET_NAME (runtime): $CONFIGURED_BUCKET"
     echo "  VECTOR_BUCKET_NAME (expected): $VECTOR_BUCKET_NAME"
 
@@ -84,6 +89,15 @@ if [ -n "$RUNTIME_ID" ]; then
       PROBLEMS+=("Runtime VECTOR_BUCKET_NAME mismatch (got '$CONFIGURED_BUCKET', expected '$VECTOR_BUCKET_NAME') - redeploy with: ./scripts/deploy.sh --agent --suffix ${STACK_SUFFIX:-}")
     else
       echo "  ✓ Bucket name matches"
+    fi
+
+    echo "  MEMORY_NAME (runtime): $CONFIGURED_MEMORY"
+    # Memory ID must match pattern: <name>-<10 alphanumeric chars>
+    if [[ ! "$CONFIGURED_MEMORY" =~ -[a-zA-Z0-9]{10}$ ]]; then
+      echo "  ❌ MEMORY_NAME is not a valid memory ID (must end with -<10chars>)"
+      PROBLEMS+=("MEMORY_NAME env var is friendly name not ID - redeploy with: ./scripts/deploy.sh --agent --suffix ${STACK_SUFFIX:-}")
+    else
+      echo "  ✓ Memory ID format valid"
     fi
   fi
 else

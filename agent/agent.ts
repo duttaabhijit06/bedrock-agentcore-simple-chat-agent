@@ -139,36 +139,63 @@ let currentActorId = "anonymous";
 const app = new BedrockAgentCoreApp({
   invocationHandler: {
     process: async (payload, context) => {
-      const body = payload as { prompt?: string; actorId?: string };
-      const prompt = body.prompt ?? "Hello! How can I help you?";
-      const actorId = body.actorId || context.sessionId || "anonymous";
-      currentActorId = actorId;
+      try {
+        const body = payload as { prompt?: string; actorId?: string };
+        const prompt = body.prompt ?? "Hello! How can I help you?";
+        const actorId = body.actorId || context.sessionId || "anonymous";
+        currentActorId = actorId;
 
-      console.log(
-        `Session ${context.sessionId} | Actor ${actorId} - Received: ${prompt.substring(0, 100)}`
-      );
+        console.log(
+          `Session ${context.sessionId} | Actor ${actorId} - Received: ${prompt.substring(0, 100)}`
+        );
 
-      // Store the user message in memory
-      await storeConversationEvent(
-        context.sessionId,
-        actorId,
-        "user",
-        prompt
-      );
+        // Store the user message in memory
+        try {
+          await storeConversationEvent(
+            context.sessionId,
+            actorId,
+            "user",
+            prompt
+          );
+        } catch (memErr) {
+          console.error("[memory] storeConversationEvent (user) failed:", memErr);
+        }
 
-      // Invoke the agent
-      const result = await agent.invoke(prompt);
-      const response = result.toString();
+        // Invoke the agent
+        let response: string;
+        try {
+          const result = await agent.invoke(prompt);
+          response = result.toString();
+          console.log(`Agent response length: ${response.length}`);
+        } catch (agentErr) {
+          console.error("[agent] invoke failed:", agentErr);
+          if (agentErr instanceof Error) {
+            console.error("[agent] stack:", agentErr.stack);
+          }
+          throw agentErr;
+        }
 
-      // Store the assistant response in memory
-      await storeConversationEvent(
-        context.sessionId,
-        actorId,
-        "assistant",
-        response
-      );
+        // Store the assistant response in memory
+        try {
+          await storeConversationEvent(
+            context.sessionId,
+            actorId,
+            "assistant",
+            response
+          );
+        } catch (memErr) {
+          console.error("[memory] storeConversationEvent (assistant) failed:", memErr);
+        }
 
-      return response;
+        return response;
+      } catch (err) {
+        console.error("[handler] Unhandled error:", err);
+        if (err instanceof Error) {
+          console.error("[handler] message:", err.message);
+          console.error("[handler] stack:", err.stack);
+        }
+        throw err;
+      }
     },
   },
 });

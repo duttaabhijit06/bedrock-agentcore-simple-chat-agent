@@ -210,31 +210,43 @@ echo ""
 # ─── 6b. Live Invocation Test ─────────────────────────────────────────────────
 echo "[7/9] Live invocation test..."
 if [ -n "$RUNTIME_ID" ]; then
-  TEST_PAYLOAD='{"prompt":"ping"}'
-  TEST_OUT=$(aws bedrock-agentcore invoke-agent-runtime \
-    --agent-runtime-arn "arn:aws:bedrock-agentcore:${REGION}:$(aws sts get-caller-identity --query Account --output text 2>/dev/null):runtime/${RUNTIME_ID}" \
-    --payload "$TEST_PAYLOAD" \
-    --content-type "application/json" \
-    --region "${REGION}" \
-    /tmp/agent-test-response.json 2>&1 || true)
+  ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null)
+  if [ -n "$ACCOUNT_ID" ]; then
+    # AWS CLI v2 auto-encodes payload to base64; pass raw JSON
+    PAYLOAD_FILE=/tmp/agent-test-payload.json
+    echo '{"prompt":"ping"}' > "$PAYLOAD_FILE"
 
-  if echo "$TEST_OUT" | grep -qi "error\|exception"; then
-    echo "  ❌ Invocation returned error:"
-    echo "$TEST_OUT" | head -5 | sed 's/^/    /'
-    PROBLEMS+=("Live agent invocation failed")
-  elif [ -f /tmp/agent-test-response.json ]; then
-    RESP=$(cat /tmp/agent-test-response.json 2>/dev/null | head -c 300)
-    if echo "$RESP" | grep -qi "error\|encountered"; then
-      echo "  ⚠️  Agent returned error response:"
-      echo "    $RESP"
-      PROBLEMS+=("Agent invoked but returned error in response body")
+    TEST_OUT=$(aws bedrock-agentcore invoke-agent-runtime \
+      --agent-runtime-arn "arn:aws:bedrock-agentcore:${REGION}:${ACCOUNT_ID}:runtime/${RUNTIME_ID}" \
+      --payload "fileb://${PAYLOAD_FILE}" \
+      --content-type "application/json" \
+      --region "${REGION}" \
+      /tmp/agent-test-response.json 2>&1 || true)
+
+    if echo "$TEST_OUT" | grep -qi "AccessDenied\|not authorized"; then
+      echo "  ⚠️  Cannot test - your IAM user lacks invoke-agent-runtime permission"
+      echo "     (this is fine if you only deploy; runtime is invoked via Gateway/Lambda)"
+    elif echo "$TEST_OUT" | grep -qiE "(error|exception)" && [ ! -f /tmp/agent-test-response.json ]; then
+      echo "  ❌ Invocation returned error:"
+      echo "$TEST_OUT" | head -5 | sed 's/^/    /'
+      PROBLEMS+=("Live agent invocation failed")
+    elif [ -f /tmp/agent-test-response.json ]; then
+      RESP=$(head -c 300 /tmp/agent-test-response.json 2>/dev/null)
+      if echo "$RESP" | grep -qi "encountered an error"; then
+        echo "  ❌ Agent returned error response:"
+        echo "    $RESP"
+        PROBLEMS+=("Agent invoked but returned error response - check runtime logs above for [handler] / [agent] errors")
+      else
+        echo "  ✓ Agent responded successfully"
+        echo "    Response preview: ${RESP:0:150}..."
+      fi
+      rm -f /tmp/agent-test-response.json
     else
-      echo "  ✓ Agent responded successfully"
-      echo "    Response preview: ${RESP:0:150}..."
+      echo "  ⚠️  Could not test invocation"
     fi
-    rm -f /tmp/agent-test-response.json
+    rm -f "$PAYLOAD_FILE"
   else
-    echo "  ⚠️  Could not test invocation (CLI may not support invoke-agent-runtime)"
+    echo "  ⚠️  Skipping - could not get account ID"
   fi
 else
   echo "  ⚠️  Skipping - no runtime ID"
@@ -308,49 +320,54 @@ else
   fi
 fi
 
-# Bedrock model access check
+# Bedrock model access check (use fileb:// to pass raw JSON; CLI v2 auto-encodes)
 echo "  Checking Bedrock model access (Claude Sonnet 4.5)..."
 MODEL_ID="us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+CLAUDE_BODY=/tmp/claude-test-body.json
+echo '{"anthropic_version":"bedrock-2023-05-31","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' > "$CLAUDE_BODY"
 MODEL_TEST=$(aws bedrock-runtime invoke-model \
   --model-id "$MODEL_ID" \
   --content-type "application/json" \
   --accept "application/json" \
-  --body "$(echo '{"anthropic_version":"bedrock-2023-05-31","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' | base64 -w 0 2>/dev/null || echo '{"anthropic_version":"bedrock-2023-05-31","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' | base64)" \
+  --body "fileb://${CLAUDE_BODY}" \
   --region "${REGION}" \
   /tmp/bedrock-test.json 2>&1 || true)
 
-if echo "$MODEL_TEST" | grep -qi "AccessDenied\|not authorized\|not enabled"; then
+if echo "$MODEL_TEST" | grep -qi "AccessDenied\|not authorized\|not enabled\|model access"; then
   echo "    ❌ Cannot invoke ${MODEL_ID}"
-  echo "    ${MODEL_TEST}" | head -2 | sed 's/^/      /'
+  echo "$MODEL_TEST" | head -2 | sed 's/^/      /'
   PROBLEMS+=("Bedrock model access denied for ${MODEL_ID} - enable in Bedrock console")
 elif echo "$MODEL_TEST" | grep -qi "throttl"; then
   echo "    ⚠️  Throttled (model is accessible but rate-limited)"
-elif [ -f /tmp/bedrock-test.json ]; then
+elif [ -f /tmp/bedrock-test.json ] && [ -s /tmp/bedrock-test.json ]; then
   echo "    ✓ Model is accessible"
-  rm -f /tmp/bedrock-test.json
 else
-  echo "    ⚠️  Could not verify model access"
+  echo "    ⚠️  Could not verify - error: $(echo "$MODEL_TEST" | head -1)"
 fi
+rm -f /tmp/bedrock-test.json "$CLAUDE_BODY"
 
 # Titan embedding model check
 echo "  Checking Bedrock model access (Titan Embed V2)..."
+TITAN_BODY=/tmp/titan-test-body.json
+echo '{"inputText":"test"}' > "$TITAN_BODY"
 EMBED_TEST=$(aws bedrock-runtime invoke-model \
   --model-id "amazon.titan-embed-text-v2:0" \
   --content-type "application/json" \
   --accept "application/json" \
-  --body "$(echo '{"inputText":"test"}' | base64 -w 0 2>/dev/null || echo '{"inputText":"test"}' | base64)" \
+  --body "fileb://${TITAN_BODY}" \
   --region "${REGION}" \
   /tmp/embed-test.json 2>&1 || true)
 
-if echo "$EMBED_TEST" | grep -qi "AccessDenied\|not authorized\|not enabled"; then
+if echo "$EMBED_TEST" | grep -qi "AccessDenied\|not authorized\|not enabled\|model access"; then
   echo "    ❌ Cannot invoke Titan Embed V2"
+  echo "$EMBED_TEST" | head -2 | sed 's/^/      /'
   PROBLEMS+=("Titan Embed V2 access denied - enable in Bedrock console (needed for seed data)")
-elif [ -f /tmp/embed-test.json ]; then
+elif [ -f /tmp/embed-test.json ] && [ -s /tmp/embed-test.json ]; then
   echo "    ✓ Titan Embed V2 accessible"
-  rm -f /tmp/embed-test.json
 else
-  echo "    ⚠️  Could not verify Titan access"
+  echo "    ⚠️  Could not verify - error: $(echo "$EMBED_TEST" | head -1)"
 fi
+rm -f /tmp/embed-test.json "$TITAN_BODY"
 echo ""
 
 # ─── Summary ─────────────────────────────────────────────────────────────────

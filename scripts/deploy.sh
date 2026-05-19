@@ -181,16 +181,35 @@ print_banner() {
     npm install -g @aws-sdk/region-config-resolver 2>/dev/null || echo "  (install failed, but may not be needed)"
   fi
 
-  # Auto-generate aws-targets.json from current credentials
-  cat > agentcore/aws-targets.json <<EOF
-[
-  {
-    "name": "${DEPLOYMENT_TARGET}",
-    "account": "${ACCOUNT_ID}",
-    "region": "${REGION}"
-  }
-]
-EOF
+  # Auto-generate aws-targets.json including current target + any existing deployed targets
+  # This prevents validation errors when switching between targets (e.g., dev/default)
+  node -e "
+    const fs = require('fs');
+    const path = require('path');
+
+    const currentTarget = '${DEPLOYMENT_TARGET}';
+    const account = '${ACCOUNT_ID}';
+    const region = '${REGION}';
+
+    // Start with current target
+    const targets = [{ name: currentTarget, account, region }];
+
+    // Add any previously deployed targets from deployed-state.json
+    const statePath = 'agentcore/.cli/deployed-state.json';
+    if (fs.existsSync(statePath)) {
+      try {
+        const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+        const deployedNames = Object.keys(state.targets || {});
+        for (const name of deployedNames) {
+          if (name !== currentTarget) {
+            targets.push({ name, account, region });
+          }
+        }
+      } catch(e) {}
+    }
+
+    fs.writeFileSync('agentcore/aws-targets.json', JSON.stringify(targets, null, 2));
+  "
 }
 
 # ─── Step: Generate Seed Data ────────────────────────────────────────────────

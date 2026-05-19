@@ -338,21 +338,39 @@ step_agent() {
     npm install --prefix agentcore/cdk 2>/dev/null
   fi
 
+  # Compute camelCase suffix for resource naming
+  SUFFIX_CAMEL=""
+  if [ -n "$STACK_SUFFIX" ]; then
+    SUFFIX_CAMEL=$(echo "$STACK_SUFFIX" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')
+  fi
+
   # Pre-delete ECR repo to avoid "already exists" errors from CDK
-  ECR_REPO_NAME="partysupply/partysupplyagent"
-  echo "  Pre-deleting ECR repository (if exists)..."
+  PROJECT_NAME_LC=$(echo "partysupply${SUFFIX_CAMEL}" | tr '[:upper:]' '[:lower:]')
+  AGENT_NAME_LC=$(echo "partysupplyagent${SUFFIX_CAMEL}" | tr '[:upper:]' '[:lower:]')
+  ECR_REPO_NAME="${PROJECT_NAME_LC}/${AGENT_NAME_LC}"
+  echo "  Pre-deleting ECR repository: ${ECR_REPO_NAME}"
   aws ecr delete-repository --repository-name "${ECR_REPO_NAME}" --force --region "${REGION}" >/dev/null 2>&1 \
     && echo "  ECR repository deleted." \
     || echo "  (ECR repo not found or already deleted)"
 
-  # Update agentcore.json with current vector bucket name and region
+  # Update agentcore.json with current vector bucket name, region, and unique project/resource names
+  # When using --suffix, project/agent/memory/gateway names get suffixed to avoid ECR/resource collisions
   echo "  Updating agentcore.json with target-specific config..."
   node -e "
     const fs = require('fs');
     const config = JSON.parse(fs.readFileSync('agentcore/agentcore.json', 'utf8'));
+    const suffix = '${SUFFIX_CAMEL}';
+
+    // Suffix project name for unique ECR/CFN resource names (only when --suffix is provided)
+    config.name = 'PartySupply' + suffix;
+    if (config.runtimes[0]) config.runtimes[0].name = 'PartySupplyAgent' + suffix;
+    if (config.memories[0]) config.memories[0].name = 'PartySupplyMemory' + suffix;
+    if (config.agentCoreGateways[0]) config.agentCoreGateways[0].name = 'PartySupplyGateway' + suffix;
+
     config.runtimes[0].envVars = config.runtimes[0].envVars.map(e => {
       if (e.name === 'VECTOR_BUCKET_NAME') return { name: 'VECTOR_BUCKET_NAME', value: '${VECTOR_BUCKET_NAME}' };
       if (e.name === 'AWS_REGION') return { name: 'AWS_REGION', value: '${REGION}' };
+      if (e.name === 'MEMORY_NAME') return { name: 'MEMORY_NAME', value: 'PartySupplyMemory' + suffix };
       return e;
     });
     fs.writeFileSync('agentcore/agentcore.json', JSON.stringify(config, null, 2));

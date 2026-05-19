@@ -216,7 +216,9 @@ if [ -n "$RUNTIME_ID" ]; then
     # Use workspace dir (not /tmp) to avoid Git Bash path translation issues on Windows
     PAYLOAD_FILE="./.troubleshoot-payload.json"
     RESPONSE_FILE="./.troubleshoot-response.json"
-    echo '{"prompt":"ping"}' > "$PAYLOAD_FILE"
+    TEST_PROMPT="show me some birthday party supplies"
+    echo "{\"prompt\":\"${TEST_PROMPT}\"}" > "$PAYLOAD_FILE"
+    echo "  Sending prompt: \"${TEST_PROMPT}\""
 
     TEST_OUT=$(aws bedrock-agentcore invoke-agent-runtime \
       --agent-runtime-arn "arn:aws:bedrock-agentcore:${REGION}:${ACCOUNT_ID}:runtime/${RUNTIME_ID}" \
@@ -233,14 +235,18 @@ if [ -n "$RUNTIME_ID" ]; then
       echo "$TEST_OUT" | head -5 | sed 's/^/    /'
       PROBLEMS+=("Live agent invocation failed")
     elif [ -s "${RESPONSE_FILE}" ]; then
-      RESP=$(head -c 300 "${RESPONSE_FILE}" 2>/dev/null)
-      if echo "$RESP" | grep -qi "encountered an error"; then
-        echo "  ❌ Agent returned error response:"
+      RESP=$(head -c 600 "${RESPONSE_FILE}" 2>/dev/null)
+      # Common signals the agent fell back to its error path
+      if echo "$RESP" | grep -qiE "(encountered an error|technical issue|sorry.*error|unable to access|having (a|some) (technical|trouble))"; then
+        echo "  ❌ Agent returned an error/fallback response (request reached runtime but tools or model failed):"
         echo "    $RESP"
-        PROBLEMS+=("Agent invoked but returned error response - check runtime logs above for [handler] / [agent] errors")
+        PROBLEMS+=("Agent fell back to error response - check [handler]/[agent]/[memory] lines in runtime logs above")
+      elif echo "$RESP" | grep -qi "balloon\|product\|\\$\|PROD-\|theme"; then
+        echo "  ✓ Agent responded with relevant product info"
+        echo "    Response preview: ${RESP:0:200}..."
       else
-        echo "  ✓ Agent responded successfully"
-        echo "    Response preview: ${RESP:0:150}..."
+        echo "  ⚠️  Agent responded but with no recognizable product content (may be off-topic answer):"
+        echo "    Response preview: ${RESP:0:200}..."
       fi
     else
       echo "  ⚠️  Could not test invocation"

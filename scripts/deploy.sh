@@ -344,14 +344,23 @@ step_agent() {
     SUFFIX_CAMEL=$(echo "$STACK_SUFFIX" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')
   fi
 
-  # Pre-delete ECR repo to avoid "already exists" errors from CDK
-  PROJECT_NAME_LC=$(echo "partysupply${SUFFIX_CAMEL}" | tr '[:upper:]' '[:lower:]')
-  AGENT_NAME_LC=$(echo "partysupplyagent${SUFFIX_CAMEL}" | tr '[:upper:]' '[:lower:]')
-  ECR_REPO_NAME="${PROJECT_NAME_LC}/${AGENT_NAME_LC}"
-  echo "  Pre-deleting ECR repository: ${ECR_REPO_NAME}"
-  aws ecr delete-repository --repository-name "${ECR_REPO_NAME}" --force --region "${REGION}" >/dev/null 2>&1 \
-    && echo "  ECR repository deleted." \
-    || echo "  (ECR repo not found or already deleted)"
+  # Only pre-delete ECR repo if the stack does NOT exist (fresh deploy)
+  # If stack exists, CDK manages the ECR repo and deleting would orphan the runtime image
+  STACK_NAME_CHECK="AgentCore-PartySupply${SUFFIX_CAMEL}-${DEPLOYMENT_TARGET}"
+  STACK_EXISTS=$(aws cloudformation describe-stacks --stack-name "${STACK_NAME_CHECK}" --region "${REGION}" \
+    --query "Stacks[0].StackStatus" --output text 2>/dev/null || echo "DOES_NOT_EXIST")
+
+  if [ "$STACK_EXISTS" = "DOES_NOT_EXIST" ]; then
+    PROJECT_NAME_LC=$(echo "partysupply${SUFFIX_CAMEL}" | tr '[:upper:]' '[:lower:]')
+    AGENT_NAME_LC=$(echo "partysupplyagent${SUFFIX_CAMEL}" | tr '[:upper:]' '[:lower:]')
+    ECR_REPO_NAME="${PROJECT_NAME_LC}/${AGENT_NAME_LC}"
+    echo "  Stack doesn't exist - pre-deleting orphaned ECR repository: ${ECR_REPO_NAME}"
+    aws ecr delete-repository --repository-name "${ECR_REPO_NAME}" --force --region "${REGION}" >/dev/null 2>&1 \
+      && echo "  ECR repository deleted." \
+      || echo "  (ECR repo not found or already deleted)"
+  else
+    echo "  Stack exists (${STACK_EXISTS}) - leaving ECR repo intact for CDK to manage."
+  fi
 
   # Update agentcore.json with current vector bucket name, region, and unique project/resource names
   # When using --suffix, project/agent/memory/gateway names get suffixed to avoid ECR/resource collisions

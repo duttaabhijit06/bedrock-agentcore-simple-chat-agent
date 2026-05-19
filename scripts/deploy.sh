@@ -432,11 +432,35 @@ step_agent() {
 
   if [ -n "$MEMORY_ID" ] && [ -n "$RUNTIME_ID" ]; then
     echo "    Memory ID: ${MEMORY_ID}"
-    aws bedrock-agentcore-control update-agent-runtime \
-      --agent-runtime-id "${RUNTIME_ID}" \
-      --region "${REGION}" \
-      --environment-variables "AWS_REGION=${REGION},VECTOR_BUCKET_NAME=${VECTOR_BUCKET_NAME},MEMORY_NAME=${MEMORY_ID}" \
-      >/dev/null 2>&1 && echo "    ✓ Runtime env vars updated" || echo "    (could not update runtime env vars - may need manual update)"
+
+    # update-agent-runtime requires existing role-arn, artifact, and network-configuration
+    RUNTIME_CFG=$(aws bedrock-agentcore-control get-agent-runtime \
+      --agent-runtime-id "${RUNTIME_ID}" --region "${REGION}" 2>/dev/null || echo "")
+
+    if [ -n "$RUNTIME_CFG" ]; then
+      ROLE_ARN=$(echo "$RUNTIME_CFG" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).roleArn||'')}catch(e){}})")
+      ARTIFACT=$(echo "$RUNTIME_CFG" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.stringify(JSON.parse(d).agentRuntimeArtifact||{}))}catch(e){}})")
+      NET_CFG=$(echo "$RUNTIME_CFG" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.stringify(JSON.parse(d).networkConfiguration||{}))}catch(e){}})")
+
+      if [ -n "$ROLE_ARN" ] && [ -n "$ARTIFACT" ] && [ -n "$NET_CFG" ]; then
+        UPDATE_OUT=$(aws bedrock-agentcore-control update-agent-runtime \
+          --agent-runtime-id "${RUNTIME_ID}" \
+          --region "${REGION}" \
+          --role-arn "${ROLE_ARN}" \
+          --agent-runtime-artifact "${ARTIFACT}" \
+          --network-configuration "${NET_CFG}" \
+          --environment-variables "AWS_REGION=${REGION},VECTOR_BUCKET_NAME=${VECTOR_BUCKET_NAME},MEMORY_NAME=${MEMORY_ID}" 2>&1)
+        if [ $? -eq 0 ]; then
+          echo "    ✓ Runtime env vars updated"
+        else
+          echo "    ❌ Update failed: $UPDATE_OUT"
+        fi
+      else
+        echo "    (could not parse runtime config: role=${ROLE_ARN:0:20}..., artifact=${ARTIFACT:0:20}..., net=${NET_CFG:0:20}...)"
+      fi
+    else
+      echo "    (could not fetch runtime config)"
+    fi
   else
     echo "    (could not find memory or runtime ID)"
   fi

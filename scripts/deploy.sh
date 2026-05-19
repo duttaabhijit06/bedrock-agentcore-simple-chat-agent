@@ -322,6 +322,20 @@ step_agent() {
     echo "  Installing CDK dependencies..."
     npm install --prefix agentcore/cdk 2>/dev/null
   fi
+
+  # Update agentcore.json with current vector bucket name and region
+  echo "  Updating agentcore.json with target-specific config..."
+  node -e "
+    const fs = require('fs');
+    const config = JSON.parse(fs.readFileSync('agentcore/agentcore.json', 'utf8'));
+    config.runtimes[0].envVars = config.runtimes[0].envVars.map(e => {
+      if (e.name === 'VECTOR_BUCKET_NAME') return { name: 'VECTOR_BUCKET_NAME', value: '${VECTOR_BUCKET_NAME}' };
+      if (e.name === 'AWS_REGION') return { name: 'AWS_REGION', value: '${REGION}' };
+      return e;
+    });
+    fs.writeFileSync('agentcore/agentcore.json', JSON.stringify(config, null, 2));
+  "
+
   echo "  Validating configuration..."
   npx agentcore validate
   echo "  Deploying (container build via CodeBuild, ~3-5 min)..."

@@ -16,94 +16,202 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Apply suffix-aware naming
+SUFFIX_CAMEL=""
+VECTOR_BUCKET_NAME="party-supply-vectors"
+LAMBDA_NAME="party-supply-gateway-handler"
+PROJECT_NAME="PartySupply"
+AGENT_NAME="PartySupplyAgent"
+MEMORY_NAME="PartySupplyMemory"
+
 if [ -n "$STACK_SUFFIX" ]; then
   DEPLOYMENT_TARGET="$STACK_SUFFIX"
+  SUFFIX_CAMEL=$(echo "$STACK_SUFFIX" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')
+  VECTOR_BUCKET_NAME="party-supply-vectors-$STACK_SUFFIX"
+  LAMBDA_NAME="party-supply-gateway-handler-$STACK_SUFFIX"
+  PROJECT_NAME="PartySupply${SUFFIX_CAMEL}"
+  AGENT_NAME="PartySupplyAgent${SUFFIX_CAMEL}"
+  MEMORY_NAME="PartySupplyMemory${SUFFIX_CAMEL}"
 fi
 
-STACK_NAME="AgentCore-PartySupply-${DEPLOYMENT_TARGET}"
+STACK_NAME="AgentCore-${PROJECT_NAME}-${DEPLOYMENT_TARGET}"
+export MSYS_NO_PATHCONV=1
 
 echo "╔══════════════════════════════════════════════════════════════╗"
 echo "║   Party Supply Chat Agent - Troubleshooting                 ║"
 echo "╠══════════════════════════════════════════════════════════════╣"
-echo "║  Region: ${REGION}"
-echo "║  Target: ${DEPLOYMENT_TARGET}"
+echo "║  Region:        ${REGION}"
+echo "║  Target:        ${DEPLOYMENT_TARGET}"
+echo "║  Stack:         ${STACK_NAME}"
+echo "║  Vector bucket: ${VECTOR_BUCKET_NAME}"
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
 
-# ─── 1. Check Runtime Status ─────────────────────────────────────────────────
-echo "[1/5] Checking runtime status..."
-RUNTIME_STATUS=$(npx agentcore status --target "${DEPLOYMENT_TARGET}" 2>&1)
-echo "$RUNTIME_STATUS" | grep -E "(PartySupplyAgent|status:|Status:)" || echo "  Could not get runtime status"
+PROBLEMS=()
 
-# Extract runtime ID from the ARN
-RUNTIME_ID=$(echo "$RUNTIME_STATUS" | grep -o 'PartySupply_PartySupplyAgent-[a-zA-Z0-9]*' | head -1)
+# ─── 1. Runtime Status ───────────────────────────────────────────────────────
+echo "[1/8] Checking runtime status..."
+RUNTIME_STATUS=$(npx agentcore status --target "${DEPLOYMENT_TARGET}" 2>&1 || echo "")
+echo "$RUNTIME_STATUS" | grep -E "(${AGENT_NAME}|status:|Status:)" || echo "  Could not get runtime status"
+
+RUNTIME_ID=$(echo "$RUNTIME_STATUS" | grep -o "${PROJECT_NAME}_${AGENT_NAME}-[a-zA-Z0-9]*" | head -1)
 if [ -n "$RUNTIME_ID" ]; then
   echo "  Runtime ID: $RUNTIME_ID"
+else
+  PROBLEMS+=("Runtime not deployed - run: ./scripts/deploy.sh --agent")
 fi
 echo ""
 
-# ─── 2. Find Runtime Log Group ───────────────────────────────────────────────
-echo "[2/5] Finding runtime log group..."
-export MSYS_NO_PATHCONV=1
-
+# ─── 2. Runtime Environment Variables ────────────────────────────────────────
+echo "[2/8] Checking runtime environment variables..."
 if [ -n "$RUNTIME_ID" ]; then
-  # Try to find log group matching the runtime ID
-  LOG_GROUP="/aws/bedrock-agentcore/runtimes/${RUNTIME_ID}-DEFAULT"
+  RUNTIME_ARN=$(echo "$RUNTIME_STATUS" | grep -o 'arn:aws:bedrock-agentcore:[^)]*' | head -1)
+  if [ -n "$RUNTIME_ARN" ]; then
+    RUNTIME_ENV=$(aws bedrock-agentcore-control get-agent-runtime \
+      --agent-runtime-id "${RUNTIME_ID}" --region "${REGION}" \
+      --query "environmentVariables" --output json 2>/dev/null || echo "{}")
 
-  # Verify it exists
-  if aws logs describe-log-groups --log-group-name-prefix "$LOG_GROUP" --region "${REGION}" --query "logGroups[0].logGroupName" --output text 2>/dev/null | grep -q "$RUNTIME_ID"; then
-    echo "  ✓ Log group: $LOG_GROUP"
-  else
-    echo "  ⚠️  Expected log group not found, searching for most recent..."
-    LOG_GROUP=$(aws logs describe-log-groups --region "${REGION}" \
-      --log-group-name-prefix "/aws/bedrock-agentcore/runtimes/PartySupply_PartySupplyAgent" \
-      --query "sort_by(logGroups[?contains(logGroupName, 'DEFAULT')], &creationTime)[-1].logGroupName" \
-      --output text 2>/dev/null | tr -d '\n' | grep -v "None" || echo "")
+    CONFIGURED_BUCKET=$(echo "$RUNTIME_ENV" | node -e "
+      let d=''; process.stdin.on('data',c=>d+=c).on('end',()=>{
+        try{const e=JSON.parse(d);console.log(e.VECTOR_BUCKET_NAME||'NOT_SET');}catch(e){console.log('UNKNOWN');}
+      });" 2>/dev/null || echo "UNKNOWN")
 
-    if [ -z "$LOG_GROUP" ] || [ "$LOG_GROUP" = "None" ]; then
-      echo "  ❌ No runtime log group found"
+    echo "  VECTOR_BUCKET_NAME (runtime): $CONFIGURED_BUCKET"
+    echo "  VECTOR_BUCKET_NAME (expected): $VECTOR_BUCKET_NAME"
+
+    if [ "$CONFIGURED_BUCKET" != "$VECTOR_BUCKET_NAME" ] && [ "$CONFIGURED_BUCKET" != "UNKNOWN" ]; then
+      echo "  ❌ MISMATCH! Runtime is looking at the wrong bucket."
+      PROBLEMS+=("Runtime VECTOR_BUCKET_NAME mismatch (got '$CONFIGURED_BUCKET', expected '$VECTOR_BUCKET_NAME') - redeploy with: ./scripts/deploy.sh --agent --suffix ${STACK_SUFFIX:-}")
     else
-      echo "  ✓ Log group: $LOG_GROUP"
+      echo "  ✓ Bucket name matches"
     fi
   fi
 else
-  echo "  ❌ Could not determine runtime ID"
-  LOG_GROUP=""
+  echo "  ⚠️  Skipping - no runtime found"
 fi
 echo ""
 
-# ─── 3. Check Recent Runtime Logs ────────────────────────────────────────────
-echo "[3/5] Checking recent runtime logs (last 30 minutes)..."
-if [ -n "$LOG_GROUP" ] && [ "$LOG_GROUP" != "None" ]; then
-  echo "  Fetching logs..."
-  aws logs tail "$LOG_GROUP" --region "${REGION}" --since 30m --format short 2>&1 | tail -50 || echo "  No recent logs found"
-else
-  echo "  ⚠️  Skipping - no log group found"
-fi
-echo ""
+# ─── 3. S3 Vector Bucket & Data ──────────────────────────────────────────────
+echo "[3/8] Checking S3 Vector bucket and data..."
+if aws s3vectors get-vector-bucket --vector-bucket-name "${VECTOR_BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1; then
+  echo "  ✓ Bucket exists: ${VECTOR_BUCKET_NAME}"
 
-# ─── 4. Check for Runtime Errors ─────────────────────────────────────────────
-echo "[4/5] Searching for errors in logs (last 1 hour)..."
-if [ -n "$LOG_GROUP" ] && [ "$LOG_GROUP" != "None" ]; then
-  ERROR_LOGS=$(aws logs filter-log-events --log-group-name "$LOG_GROUP" --region "${REGION}" \
-    --start-time $(date -u -d '1 hour ago' +%s)000 \
-    --filter-pattern "ERROR" \
-    --query "events[*].[timestamp,message]" \
-    --output text 2>/dev/null || echo "")
+  # Check if products-index has vectors
+  PRODUCT_COUNT=$(node --input-type=module -e "
+import { S3VectorsClient, ListVectorsCommand } from '@aws-sdk/client-s3vectors';
+const c = new S3VectorsClient({ region: '${REGION}' });
+try {
+  const r = await c.send(new ListVectorsCommand({ vectorBucketName: '${VECTOR_BUCKET_NAME}', indexName: 'products-index', maxResults: 100 }));
+  console.log(r.vectors?.length || 0);
+} catch(e) { console.log('ERROR:' + e.name); }
+" 2>/dev/null || echo "ERROR")
 
-  if [ -z "$ERROR_LOGS" ]; then
-    echo "  ✓ No ERROR level logs found"
-  else
-    echo "  ❌ Found errors:"
-    echo "$ERROR_LOGS" | head -20
+  ORDER_COUNT=$(node --input-type=module -e "
+import { S3VectorsClient, ListVectorsCommand } from '@aws-sdk/client-s3vectors';
+const c = new S3VectorsClient({ region: '${REGION}' });
+try {
+  const r = await c.send(new ListVectorsCommand({ vectorBucketName: '${VECTOR_BUCKET_NAME}', indexName: 'orders-index', maxResults: 100 }));
+  console.log(r.vectors?.length || 0);
+} catch(e) { console.log('ERROR:' + e.name); }
+" 2>/dev/null || echo "ERROR")
+
+  echo "  Products index: ${PRODUCT_COUNT} vectors"
+  echo "  Orders index:   ${ORDER_COUNT} vectors"
+
+  if [[ "$PRODUCT_COUNT" == "0" ]] || [[ "$PRODUCT_COUNT" == ERROR* ]]; then
+    PROBLEMS+=("Products index empty/missing - run: ./scripts/deploy.sh --upload --suffix ${STACK_SUFFIX:-}")
+  fi
+  if [[ "$ORDER_COUNT" == "0" ]] || [[ "$ORDER_COUNT" == ERROR* ]]; then
+    PROBLEMS+=("Orders index empty/missing - run: ./scripts/deploy.sh --upload --suffix ${STACK_SUFFIX:-}")
   fi
 else
-  echo "  ⚠️  Skipping - no log group found"
+  echo "  ❌ Bucket not found: ${VECTOR_BUCKET_NAME}"
+  PROBLEMS+=("Vector bucket missing - run: ./scripts/deploy.sh --vectors --upload --suffix ${STACK_SUFFIX:-}")
 fi
 echo ""
 
-# ─── 5. Check Runtime IAM Permissions ────────────────────────────────────────
-echo "[5/5] Checking runtime IAM role permissions..."
+# ─── 4. Memory Resource ──────────────────────────────────────────────────────
+echo "[4/8] Checking memory resource..."
+MEMORY_INFO=$(echo "$RUNTIME_STATUS" | grep -A 1 "${MEMORY_NAME}:" | head -2 || echo "")
+if echo "$MEMORY_INFO" | grep -q "Deployed"; then
+  echo "  ✓ Memory deployed: ${MEMORY_NAME}"
+else
+  echo "  ❌ Memory not deployed: ${MEMORY_NAME}"
+  PROBLEMS+=("Memory resource missing - run: ./scripts/deploy.sh --agent --suffix ${STACK_SUFFIX:-}")
+fi
+echo ""
+
+# ─── 5. Find & Check Runtime Log Group ───────────────────────────────────────
+echo "[5/8] Finding runtime log group..."
+LOG_GROUP=""
+if [ -n "$RUNTIME_ID" ]; then
+  LOG_GROUP="/aws/bedrock-agentcore/runtimes/${RUNTIME_ID}-DEFAULT"
+  if aws logs describe-log-groups --log-group-name-prefix "$LOG_GROUP" --region "${REGION}" \
+       --query "logGroups[0].logGroupName" --output text 2>/dev/null | grep -q "$RUNTIME_ID"; then
+    echo "  ✓ Log group: $LOG_GROUP"
+  else
+    LOG_GROUP=""
+  fi
+fi
+if [ -z "$LOG_GROUP" ]; then
+  echo "  ⚠️  Log group not found yet (runtime may not have been invoked)"
+fi
+echo ""
+
+# ─── 6. Recent Runtime Logs & Errors ─────────────────────────────────────────
+echo "[6/8] Checking recent logs (last 30 min)..."
+if [ -n "$LOG_GROUP" ]; then
+  RECENT_LOGS=$(aws logs tail "$LOG_GROUP" --region "${REGION}" --since 30m --format short 2>/dev/null | tail -30 || echo "")
+  if [ -n "$RECENT_LOGS" ]; then
+    echo "$RECENT_LOGS"
+
+    # Search for errors
+    ERROR_COUNT=$(echo "$RECENT_LOGS" | grep -ci -E "(ERROR|Exception|failed|denied)" || echo "0")
+    if [ "$ERROR_COUNT" -gt "0" ] 2>/dev/null; then
+      PROBLEMS+=("Errors found in runtime logs - check CloudWatch")
+    fi
+  else
+    echo "  No recent logs"
+  fi
+else
+  echo "  ⚠️  Skipping - no log group"
+fi
+echo ""
+
+# ─── 7. Lambda & Gateway Wiring ──────────────────────────────────────────────
+echo "[7/8] Checking Lambda & Gateway wiring..."
+if aws lambda get-function --function-name "${LAMBDA_NAME}" --region "${REGION}" >/dev/null 2>&1; then
+  LAMBDA_STATE=$(aws lambda get-function --function-name "${LAMBDA_NAME}" --region "${REGION}" \
+    --query "Configuration.State" --output text 2>/dev/null || echo "Unknown")
+  echo "  ✓ Lambda: ${LAMBDA_NAME} (${LAMBDA_STATE})"
+  if [ "$LAMBDA_STATE" != "Active" ]; then
+    PROBLEMS+=("Lambda not Active (${LAMBDA_STATE}) - run: ./scripts/deploy.sh --lambda --suffix ${STACK_SUFFIX:-}")
+  fi
+else
+  echo "  ❌ Lambda not deployed: ${LAMBDA_NAME}"
+  PROBLEMS+=("Lambda missing - run: ./scripts/deploy.sh --lambda --suffix ${STACK_SUFFIX:-}")
+fi
+
+GATEWAY_ID=$(aws bedrock-agentcore-control list-gateways --region "${REGION}" \
+  --query "items[?contains(name, '${PROJECT_NAME}')].gatewayId | [0]" --output text 2>/dev/null || echo "None")
+
+if [ -n "$GATEWAY_ID" ] && [ "$GATEWAY_ID" != "None" ]; then
+  echo "  ✓ Gateway: $GATEWAY_ID"
+  TARGET_COUNT=$(aws bedrock-agentcore-control list-gateway-targets \
+    --gateway-identifier "${GATEWAY_ID}" --region "${REGION}" \
+    --query "length(items)" --output text 2>/dev/null || echo "0")
+  echo "  Gateway targets: ${TARGET_COUNT}"
+  if [ "$TARGET_COUNT" = "0" ] || [ "$TARGET_COUNT" = "None" ]; then
+    PROBLEMS+=("Gateway has no Lambda target - run: ./scripts/deploy.sh --gateway-target --suffix ${STACK_SUFFIX:-}")
+  fi
+else
+  echo "  ❌ Gateway not found"
+  PROBLEMS+=("Gateway missing - run: ./scripts/deploy.sh --agent --suffix ${STACK_SUFFIX:-}")
+fi
+echo ""
+
+# ─── 8. IAM Permissions ──────────────────────────────────────────────────────
+echo "[8/8] Checking runtime IAM role permissions..."
 RUNTIME_ROLE=$(aws cloudformation describe-stack-resources \
   --stack-name "${STACK_NAME}" --region "${REGION}" \
   --query "StackResources[?contains(LogicalResourceId, 'RuntimeExecutionRole')].PhysicalResourceId | [0]" \
@@ -111,28 +219,29 @@ RUNTIME_ROLE=$(aws cloudformation describe-stack-resources \
 
 if [ -z "$RUNTIME_ROLE" ] || [ "$RUNTIME_ROLE" = "None" ]; then
   echo "  ❌ Could not find runtime execution role"
+  PROBLEMS+=("Runtime IAM role missing - stack may have failed")
 else
   echo "  ✓ Runtime role: $RUNTIME_ROLE"
-
-  # Check for required policies
-  echo "  Checking inline policies..."
   POLICIES=$(aws iam list-role-policies --role-name "$RUNTIME_ROLE" --region "${REGION}" \
     --query "PolicyNames" --output text 2>/dev/null || echo "")
-
   if echo "$POLICIES" | grep -q "RAGAccess"; then
     echo "    ✓ RAGAccess policy attached"
   else
     echo "    ❌ RAGAccess policy missing (needed for S3 Vectors & Memory)"
+    PROBLEMS+=("RAGAccess policy missing - run: ./scripts/deploy.sh --agent --suffix ${STACK_SUFFIX:-}")
   fi
 fi
 echo ""
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo "╔══════════════════════════════════════════════════════════════╗"
-echo "║   Troubleshooting Complete                                   ║"
-echo "╠══════════════════════════════════════════════════════════════╣"
-echo "║  If you see 500 errors:                                      ║"
-echo "║  1. Check the runtime logs above for error details           ║"
-echo "║  2. Verify RAGAccess policy is attached                      ║"
-echo "║  3. Try redeploying: ./scripts/deploy.sh --agent             ║"
-echo "╚══════════════════════════════════════════════════════════════╝"
+if [ ${#PROBLEMS[@]} -eq 0 ]; then
+  echo "║   ✓ All checks passed                                        ║"
+  echo "╚══════════════════════════════════════════════════════════════╝"
+else
+  echo "║   ⚠️  ${#PROBLEMS[@]} issue(s) found                                       ║"
+  echo "╚══════════════════════════════════════════════════════════════╝"
+  for i in "${!PROBLEMS[@]}"; do
+    echo "  $((i+1)). ${PROBLEMS[$i]}"
+  done
+fi

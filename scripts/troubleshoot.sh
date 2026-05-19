@@ -50,7 +50,7 @@ echo ""
 PROBLEMS=()
 
 # ─── 1. Runtime Status ───────────────────────────────────────────────────────
-echo "[1/8] Checking runtime status..."
+echo "[1/9] Checking runtime status..."
 RUNTIME_STATUS=$(npx agentcore status --target "${DEPLOYMENT_TARGET}" 2>&1 || echo "")
 echo "$RUNTIME_STATUS" | grep -E "(${AGENT_NAME}|status:|Status:)" || echo "  Could not get runtime status"
 
@@ -63,7 +63,7 @@ fi
 echo ""
 
 # ─── 2. Runtime Environment Variables ────────────────────────────────────────
-echo "[2/8] Checking runtime environment variables..."
+echo "[2/9] Checking runtime environment variables..."
 if [ -n "$RUNTIME_ID" ]; then
   RUNTIME_ARN=$(echo "$RUNTIME_STATUS" | grep -o 'arn:aws:bedrock-agentcore:[^)]*' | head -1)
   if [ -n "$RUNTIME_ARN" ]; then
@@ -106,7 +106,7 @@ fi
 echo ""
 
 # ─── 3. S3 Vector Bucket & Data ──────────────────────────────────────────────
-echo "[3/8] Checking S3 Vector bucket and data..."
+echo "[3/9] Checking S3 Vector bucket and data..."
 if aws s3vectors get-vector-bucket --vector-bucket-name "${VECTOR_BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1; then
   echo "  ✓ Bucket exists: ${VECTOR_BUCKET_NAME}"
 
@@ -145,7 +145,7 @@ fi
 echo ""
 
 # ─── 4. Memory Resource ──────────────────────────────────────────────────────
-echo "[4/8] Checking memory resource..."
+echo "[4/9] Checking memory resource..."
 MEMORY_INFO=$(echo "$RUNTIME_STATUS" | grep -A 1 "${MEMORY_NAME}:" | head -2 || echo "")
 if echo "$MEMORY_INFO" | grep -q "Deployed"; then
   echo "  ✓ Memory deployed: ${MEMORY_NAME}"
@@ -156,7 +156,7 @@ fi
 echo ""
 
 # ─── 5. Find & Check Runtime Log Group ───────────────────────────────────────
-echo "[5/8] Finding runtime log group..."
+echo "[5/9] Finding runtime log group..."
 LOG_GROUP=""
 if [ -n "$RUNTIME_ID" ]; then
   LOG_GROUP="/aws/bedrock-agentcore/runtimes/${RUNTIME_ID}-DEFAULT"
@@ -173,33 +173,95 @@ fi
 echo ""
 
 # ─── 6. Recent Runtime Logs & Errors ─────────────────────────────────────────
-echo "[6/8] Checking recent logs (last 30 min)..."
+echo "[6/9] Checking recent logs (last 30 min)..."
 if [ -n "$LOG_GROUP" ]; then
-  RECENT_LOGS=$(aws logs tail "$LOG_GROUP" --region "${REGION}" --since 30m --format short 2>/dev/null | tail -30 || echo "")
+  RECENT_LOGS=$(aws logs tail "$LOG_GROUP" --region "${REGION}" --since 30m --format short 2>/dev/null | tail -50 || echo "")
   if [ -n "$RECENT_LOGS" ]; then
     echo "$RECENT_LOGS"
 
-    # Search for errors
-    ERROR_COUNT=$(echo "$RECENT_LOGS" | grep -ci -E "(ERROR|Exception|failed|denied)" || echo "0")
-    if [ "$ERROR_COUNT" -gt "0" ] 2>/dev/null; then
-      PROBLEMS+=("Errors found in runtime logs - check CloudWatch")
+    # Detect HTTP 500s (statusCode pattern)
+    HTTP_500S=$(echo "$RECENT_LOGS" | grep -c '"statusCode":500' || true)
+    if [ "$HTTP_500S" -gt "0" ] 2>/dev/null; then
+      PROBLEMS+=("Runtime returned ${HTTP_500S} HTTP 500 response(s) - check logs for [handler] / [agent] error lines")
+    fi
+
+    # Detect explicit error markers (added by our error logging in agent.ts)
+    HANDLER_ERRORS=$(echo "$RECENT_LOGS" | grep -E "\[handler\] Unhandled|\[agent\] invoke failed|\[memory\]" | tail -5 || true)
+    if [ -n "$HANDLER_ERRORS" ]; then
+      echo ""
+      echo "  ⚠️  Application errors detected:"
+      echo "$HANDLER_ERRORS" | sed 's/^/    /'
+      PROBLEMS+=("Application errors logged - see [handler]/[agent] lines above")
+    fi
+
+    # Generic error scan
+    GENERIC_ERRORS=$(echo "$RECENT_LOGS" | grep -ciE "(ERROR|Exception|denied|throttl)" || true)
+    if [ "$GENERIC_ERRORS" -gt "0" ] 2>/dev/null && [ -z "$HANDLER_ERRORS" ] && [ "$HTTP_500S" -eq "0" ]; then
+      PROBLEMS+=("Generic errors found in runtime logs (${GENERIC_ERRORS} occurrences) - check CloudWatch")
     fi
   else
-    echo "  No recent logs"
+    echo "  No recent logs (runtime may not have been invoked yet)"
   fi
 else
   echo "  ⚠️  Skipping - no log group"
 fi
 echo ""
 
-# ─── 7. Lambda & Gateway Wiring ──────────────────────────────────────────────
-echo "[7/8] Checking Lambda & Gateway wiring..."
+# ─── 6b. Live Invocation Test ─────────────────────────────────────────────────
+echo "[7/9] Live invocation test..."
+if [ -n "$RUNTIME_ID" ]; then
+  TEST_PAYLOAD='{"prompt":"ping"}'
+  TEST_OUT=$(aws bedrock-agentcore invoke-agent-runtime \
+    --agent-runtime-arn "arn:aws:bedrock-agentcore:${REGION}:$(aws sts get-caller-identity --query Account --output text 2>/dev/null):runtime/${RUNTIME_ID}" \
+    --payload "$TEST_PAYLOAD" \
+    --content-type "application/json" \
+    --region "${REGION}" \
+    /tmp/agent-test-response.json 2>&1 || true)
+
+  if echo "$TEST_OUT" | grep -qi "error\|exception"; then
+    echo "  ❌ Invocation returned error:"
+    echo "$TEST_OUT" | head -5 | sed 's/^/    /'
+    PROBLEMS+=("Live agent invocation failed")
+  elif [ -f /tmp/agent-test-response.json ]; then
+    RESP=$(cat /tmp/agent-test-response.json 2>/dev/null | head -c 300)
+    if echo "$RESP" | grep -qi "error\|encountered"; then
+      echo "  ⚠️  Agent returned error response:"
+      echo "    $RESP"
+      PROBLEMS+=("Agent invoked but returned error in response body")
+    else
+      echo "  ✓ Agent responded successfully"
+      echo "    Response preview: ${RESP:0:150}..."
+    fi
+    rm -f /tmp/agent-test-response.json
+  else
+    echo "  ⚠️  Could not test invocation (CLI may not support invoke-agent-runtime)"
+  fi
+else
+  echo "  ⚠️  Skipping - no runtime ID"
+fi
+echo ""
+
+# ─── 8. Lambda & Gateway Wiring ──────────────────────────────────────────────
+echo "[8/9] Checking Lambda & Gateway wiring..."
 if aws lambda get-function --function-name "${LAMBDA_NAME}" --region "${REGION}" >/dev/null 2>&1; then
   LAMBDA_STATE=$(aws lambda get-function --function-name "${LAMBDA_NAME}" --region "${REGION}" \
     --query "Configuration.State" --output text 2>/dev/null || echo "Unknown")
   echo "  ✓ Lambda: ${LAMBDA_NAME} (${LAMBDA_STATE})"
   if [ "$LAMBDA_STATE" != "Active" ]; then
     PROBLEMS+=("Lambda not Active (${LAMBDA_STATE}) - run: ./scripts/deploy.sh --lambda --suffix ${STACK_SUFFIX:-}")
+  fi
+
+  # Check Lambda recent error logs
+  LAMBDA_LG="/aws/lambda/${LAMBDA_NAME}"
+  LAMBDA_ERRORS=$(aws logs filter-log-events --log-group-name "$LAMBDA_LG" --region "${REGION}" \
+    --start-time $(node -e "console.log(Date.now() - 30*60*1000)") \
+    --filter-pattern "ERROR" --query "events[*].message" --output text 2>/dev/null | head -5 || true)
+  if [ -n "$LAMBDA_ERRORS" ]; then
+    echo "  ⚠️  Lambda errors found in last 30m:"
+    echo "$LAMBDA_ERRORS" | head -3 | sed 's/^/    /'
+    PROBLEMS+=("Lambda has errors in CloudWatch logs - check ${LAMBDA_LG}")
+  else
+    echo "  ✓ No recent Lambda errors"
   fi
 else
   echo "  ❌ Lambda not deployed: ${LAMBDA_NAME}"
@@ -224,8 +286,8 @@ else
 fi
 echo ""
 
-# ─── 8. IAM Permissions ──────────────────────────────────────────────────────
-echo "[8/8] Checking runtime IAM role permissions..."
+# ─── 9. IAM Permissions & Bedrock Model Access ───────────────────────────────
+echo "[9/9] Checking runtime IAM role and Bedrock model access..."
 RUNTIME_ROLE=$(aws cloudformation describe-stack-resources \
   --stack-name "${STACK_NAME}" --region "${REGION}" \
   --query "StackResources[?contains(LogicalResourceId, 'RuntimeExecutionRole')].PhysicalResourceId | [0]" \
@@ -244,6 +306,50 @@ else
     echo "    ❌ RAGAccess policy missing (needed for S3 Vectors & Memory)"
     PROBLEMS+=("RAGAccess policy missing - run: ./scripts/deploy.sh --agent --suffix ${STACK_SUFFIX:-}")
   fi
+fi
+
+# Bedrock model access check
+echo "  Checking Bedrock model access (Claude Sonnet 4.5)..."
+MODEL_ID="us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+MODEL_TEST=$(aws bedrock-runtime invoke-model \
+  --model-id "$MODEL_ID" \
+  --content-type "application/json" \
+  --accept "application/json" \
+  --body "$(echo '{"anthropic_version":"bedrock-2023-05-31","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' | base64 -w 0 2>/dev/null || echo '{"anthropic_version":"bedrock-2023-05-31","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' | base64)" \
+  --region "${REGION}" \
+  /tmp/bedrock-test.json 2>&1 || true)
+
+if echo "$MODEL_TEST" | grep -qi "AccessDenied\|not authorized\|not enabled"; then
+  echo "    ❌ Cannot invoke ${MODEL_ID}"
+  echo "    ${MODEL_TEST}" | head -2 | sed 's/^/      /'
+  PROBLEMS+=("Bedrock model access denied for ${MODEL_ID} - enable in Bedrock console")
+elif echo "$MODEL_TEST" | grep -qi "throttl"; then
+  echo "    ⚠️  Throttled (model is accessible but rate-limited)"
+elif [ -f /tmp/bedrock-test.json ]; then
+  echo "    ✓ Model is accessible"
+  rm -f /tmp/bedrock-test.json
+else
+  echo "    ⚠️  Could not verify model access"
+fi
+
+# Titan embedding model check
+echo "  Checking Bedrock model access (Titan Embed V2)..."
+EMBED_TEST=$(aws bedrock-runtime invoke-model \
+  --model-id "amazon.titan-embed-text-v2:0" \
+  --content-type "application/json" \
+  --accept "application/json" \
+  --body "$(echo '{"inputText":"test"}' | base64 -w 0 2>/dev/null || echo '{"inputText":"test"}' | base64)" \
+  --region "${REGION}" \
+  /tmp/embed-test.json 2>&1 || true)
+
+if echo "$EMBED_TEST" | grep -qi "AccessDenied\|not authorized\|not enabled"; then
+  echo "    ❌ Cannot invoke Titan Embed V2"
+  PROBLEMS+=("Titan Embed V2 access denied - enable in Bedrock console (needed for seed data)")
+elif [ -f /tmp/embed-test.json ]; then
+  echo "    ✓ Titan Embed V2 accessible"
+  rm -f /tmp/embed-test.json
+else
+  echo "    ⚠️  Could not verify Titan access"
 fi
 echo ""
 

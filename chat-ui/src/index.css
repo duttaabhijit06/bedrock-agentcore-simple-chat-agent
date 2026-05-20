@@ -285,65 +285,6 @@ body {
   color: #7048e8;
 }
 
-/* Error details */
-.error-details {
-  margin-top: 0.5rem;
-  border-top: 1px solid #fee;
-  padding-top: 0.5rem;
-}
-
-.error-toggle {
-  background: #fff5f5;
-  border: 1px solid #fcc;
-  color: #c92a2a;
-  padding: 0.3rem 0.6rem;
-  border-radius: 4px;
-  font-size: 0.75rem;
-  cursor: pointer;
-  font-weight: 500;
-  transition: background 0.2s;
-}
-
-.error-toggle:hover {
-  background: #ffe3e3;
-}
-
-.error-content {
-  margin-top: 0.5rem;
-  padding: 0.6rem;
-  background: #fff5f5;
-  border: 1px solid #fcc;
-  border-radius: 6px;
-  font-size: 0.75rem;
-}
-
-.error-content > div {
-  margin-bottom: 0.5rem;
-}
-
-.error-content > div:last-child {
-  margin-bottom: 0;
-}
-
-.error-content strong {
-  color: #c92a2a;
-  display: block;
-  margin-bottom: 0.25rem;
-}
-
-.error-content pre {
-  background: #fff;
-  padding: 0.5rem;
-  border-radius: 4px;
-  overflow-x: auto;
-  font-size: 0.7rem;
-  line-height: 1.4;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 200px;
-  overflow-y: auto;
-}
-
 /* Activity log */
 .message-activity {
   align-self: flex-start;
@@ -431,14 +372,35 @@ body {
 }
 
 /* Credentials hint */
+.cred-hint-container {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.5rem 0 1rem;
+}
+
 .cred-hint {
-  display: block;
+  flex: 1;
   background: #f1f3f5;
   padding: 0.5rem 0.75rem;
   border-radius: 6px;
   font-size: 0.8rem;
-  margin: 0.5rem 0 1rem;
   font-family: monospace;
+}
+
+.copy-btn {
+  background: transparent;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: all 0.2s ease;
+}
+
+.copy-btn:hover {
+  background: #f1f3f5;
+  border-color: var(--primary);
 }
 
 /* Credentials Form */

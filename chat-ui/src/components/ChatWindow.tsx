@@ -13,34 +13,11 @@ interface Message {
     memoryRecalled?: string[];
     responseTimeMs?: number;
   };
-  errorDetails?: {
-    status?: number;
-    statusText?: string;
-    responseBody?: string;
-    stack?: string;
-  };
 }
 
 const GATEWAY_URL = import.meta.env.VITE_GATEWAY_URL || "";
 
 export function ChatWindow() {
-  // Check for gateway URL on mount
-  useEffect(() => {
-    console.log("[Chat] Gateway URL:", GATEWAY_URL);
-    if (!GATEWAY_URL) {
-      console.error("[Chat] VITE_GATEWAY_URL is not configured!");
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: "config-error",
-          role: "system",
-          content: "❌ Configuration Error: VITE_GATEWAY_URL is not set. Please check chat-ui/.env.local file.",
-          timestamp: new Date(),
-        },
-      ]);
-    }
-  }, []);
-
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "welcome",
@@ -59,7 +36,13 @@ export function ChatWindow() {
     secretAccessKey: "",
     sessionToken: "",
   });
-  const [expandedErrors, setExpandedErrors] = useState<Set<string>>(new Set());
+  const [copied, setCopied] = useState(false);
+
+  const handleCopyCommand = async () => {
+    await navigator.clipboard.writeText("aws configure export-credentials");
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -100,8 +83,6 @@ export function ChatWindow() {
 
     const startTime = Date.now();
 
-    console.log("[Chat] Starting request to:", GATEWAY_URL);
-
     try {
       const mcpUrl = `${GATEWAY_URL}/mcp`;
       const body = JSON.stringify({
@@ -118,9 +99,7 @@ export function ChatWindow() {
 
       setActivity((prev) => [...prev, "📡 Calling AgentCore Gateway..."]);
 
-      console.log("[Chat] Signing request...");
       const signedHeaders = await signRequest(mcpUrl, "POST", body, credentials);
-      console.log("[Chat] Request signed, sending to:", mcpUrl);
 
       const response = await fetch(mcpUrl, {
         method: "POST",
@@ -131,21 +110,14 @@ export function ChatWindow() {
         body,
       });
 
-      console.log("[Chat] Response received:", response.status, response.statusText);
       setActivity((prev) => [...prev, "🤖 Agent processing (Claude Sonnet 4.5)..."]);
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error("[Chat] Error response body:", errorText);
-        const error: any = new Error(`Gateway error (${response.status}): ${errorText}`);
-        error.status = response.status;
-        error.statusText = response.statusText;
-        error.responseBody = errorText;
-        throw error;
+        throw new Error(`Gateway error (${response.status}): ${errorText}`);
       }
 
       const data = await response.json();
-      console.log("[Chat] Response data:", JSON.stringify(data, null, 2));
       const responseTimeMs = Date.now() - startTime;
 
       let assistantContent = "";
@@ -183,8 +155,6 @@ export function ChatWindow() {
         `✅ Response received (${(responseTimeMs / 1000).toFixed(1)}s)`,
       ]);
 
-      console.log("[Chat] Final assistant content:", assistantContent);
-
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
@@ -199,21 +169,13 @@ export function ChatWindow() {
 
       // Brief delay to show activity before clearing
       await new Promise((r) => setTimeout(r, 800));
-      console.log("[Chat] Adding assistant message to UI");
       setMessages((prev) => [...prev, assistantMessage]);
-    } catch (error: any) {
-      console.error("[Chat] Error occurred:", error);
+    } catch (error) {
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "system",
-        content: `❌ ${error instanceof Error ? error.message : "Failed to send message"}`,
+        content: `${error instanceof Error ? error.message : "Failed to send message"}`,
         timestamp: new Date(),
-        errorDetails: {
-          status: error.status,
-          statusText: error.statusText,
-          responseBody: error.responseBody,
-          stack: error.stack,
-        },
       };
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
@@ -237,7 +199,17 @@ export function ChatWindow() {
           Enter your AWS credentials to authenticate with the AgentCore Gateway
           (IAM SigV4). Get them by running:
         </p>
-        <code className="cred-hint">aws configure export-credentials</code>
+        <div className="cred-hint-container">
+          <code className="cred-hint">aws configure export-credentials</code>
+          <button
+            type="button"
+            className="copy-btn"
+            onClick={handleCopyCommand}
+            title="Copy to clipboard"
+          >
+            {copied ? "✓" : "📋"}
+          </button>
+        </div>
         <form onSubmit={handleCredentialSubmit}>
           <label>
             Access Key ID
@@ -312,45 +284,6 @@ export function ChatWindow() {
                     <span className="meta-badge meta-time">
                       ⏱ {(msg.metadata.responseTimeMs / 1000).toFixed(1)}s
                     </span>
-                  )}
-                </div>
-              )}
-              {msg.errorDetails && (
-                <div className="error-details">
-                  <button
-                    className="error-toggle"
-                    onClick={() => {
-                      const newExpanded = new Set(expandedErrors);
-                      if (expandedErrors.has(msg.id)) {
-                        newExpanded.delete(msg.id);
-                      } else {
-                        newExpanded.add(msg.id);
-                      }
-                      setExpandedErrors(newExpanded);
-                    }}
-                  >
-                    {expandedErrors.has(msg.id) ? "▼" : "▶"} Error Details
-                  </button>
-                  {expandedErrors.has(msg.id) && (
-                    <div className="error-content">
-                      {msg.errorDetails.status && (
-                        <div>
-                          <strong>Status:</strong> {msg.errorDetails.status} {msg.errorDetails.statusText}
-                        </div>
-                      )}
-                      {msg.errorDetails.responseBody && (
-                        <div>
-                          <strong>Response:</strong>
-                          <pre>{msg.errorDetails.responseBody}</pre>
-                        </div>
-                      )}
-                      {msg.errorDetails.stack && (
-                        <div>
-                          <strong>Stack:</strong>
-                          <pre>{msg.errorDetails.stack}</pre>
-                        </div>
-                      )}
-                    </div>
                   )}
                 </div>
               )}

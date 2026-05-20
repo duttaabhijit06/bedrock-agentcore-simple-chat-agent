@@ -1,0 +1,16 @@
+{
+  "name": "agentcore-nodejs-client",
+  "version": "1.0.0",
+  "description": "Node.js client example for calling AgentCore Gateway",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "chat": "node index.js"
+  },
+  "dependencies": {
+    "@aws-crypto/sha256-js": "^5.2.0",
+    "@aws-sdk/credential-providers": "^3.787.0",
+    "@smithy/protocol-http": "^5.1.0",
+    "@smithy/signature-v4": "^5.0.2"
+  }
+}

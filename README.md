@@ -45,12 +45,54 @@ aws sts get-caller-identity
 
 ### Model Access
 
-Enable in the [Bedrock console](https://console.aws.amazon.com/bedrock/) (us-west-2):
+The agent uses two Bedrock foundation models:
 
-| Model | ID |
-|-------|----|
-| Claude Sonnet 4.5 | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` |
-| Titan Text Embeddings V2 | `amazon.titan-embed-text-v2:0` |
+| Model | ID | Subscription |
+|-------|----|----|
+| Claude Sonnet 4.5 | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | Required (Anthropic FTU form + agreement) |
+| Titan Text Embeddings V2 | `amazon.titan-embed-text-v2:0` | Available by default in most accounts |
+
+AWS has deprecated the Bedrock Model Access console page — model access must now be managed via API/CLI. Use the helper script:
+
+```bash
+./scripts/enable-model-access.sh
+```
+
+This script:
+1. Prompts for Anthropic First-Time-Use form details (required once per account)
+2. Subscribes the account to Claude Sonnet 4.5 (and Titan if not already enabled)
+3. Polls for `AVAILABLE` status (up to 2 minutes)
+
+**Example interactive run:**
+
+```text
+[1/4] Anthropic First-Time-Use Form
+  Enter your company/organization name: Acme Party Co
+  Enter company website (or GitHub/portfolio URL): https://github.com/acme/party-agent
+  Industry (e.g., Technology, Retail, Education): Retail
+  Briefly describe your use case (one line):
+  > Demo agent for party supply discovery using RAG and AgentCore Memory
+  ✓ Form submitted successfully
+
+[2/4] Subscribe to Claude Sonnet 4.5
+  Status: NOT_AVAILABLE - subscribing...
+  ✓ Subscription request submitted
+
+[3/4] Subscribe to Titan Embed V2
+  ✓ Already subscribed
+
+[4/4] Waiting for subscriptions to finalize (up to 2 minutes)...
+  Checking Claude Sonnet 4.5...
+    ✓ Claude Sonnet 4.5 is AVAILABLE
+  Checking Titan Embed V2...
+    ✓ Titan Embed V2 is AVAILABLE
+```
+
+**Requirements:**
+- AWS CLI v2.27.42 or later (`aws --version`)
+- IAM permissions: `aws-marketplace:Subscribe`, `aws-marketplace:ViewSubscriptions` — or attach the AWS managed policy `AmazonBedrockFullAccess`
+
+> **Note:** Subscriptions usually complete within 2 minutes. If model access was triggered automatically by an invocation (instead of via this script), it can take up to 15 minutes to finalize.
 
 ## Quick Start
 
@@ -61,10 +103,13 @@ npm install && cd agent && npm install && cd ../chat-ui && npm install && cd ..
 # 2. Login
 aws login && export AWS_REGION=us-west-2
 
-# 3. Deploy
+# 3. Enable Bedrock model access (one-time per account)
+./scripts/enable-model-access.sh
+
+# 4. Deploy
 ./scripts/deploy.sh --all
 
-# 4. Run UI
+# 5. Run UI
 ./scripts/run-local-ui.sh --port 3000
 ```
 
@@ -76,11 +121,13 @@ The deploy script handles everything: seed data generation, S3 Vectors, agent ru
 
 | Script | Purpose |
 |--------|---------|
+| `./scripts/enable-model-access.sh` | Subscribe AWS account to Bedrock models (one-time) |
 | `./scripts/deploy.sh --all` | Full deployment |
 | `./scripts/deploy.sh --all --suffix dev` | Deploy with 'dev' suffix (multiple stacks in same account) |
 | `./scripts/deploy.sh --agent` | Deploy agent + gateway + memory only |
 | `./scripts/deploy.sh --lambda --gateway-target` | Redeploy Lambda + rewire |
 | `./scripts/deploy.sh --status` | Show status + update UI config |
+| `./scripts/troubleshoot.sh` | Diagnose deployment issues (9 checks) |
 | `./scripts/run-local-ui.sh` | Start chat UI locally |
 | `./scripts/cleanup.sh` | Tear down all resources (correct order) |
 | `./scripts/cleanup.sh --suffix dev` | Tear down 'dev' deployment |

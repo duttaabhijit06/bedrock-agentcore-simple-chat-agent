@@ -342,10 +342,12 @@ MODEL_TEST=$(aws bedrock-runtime invoke-model \
   --region "${REGION}" \
   "${CLAUDE_RESP}" 2>&1 || true)
 
+CLAUDE_DENIED=false
 if echo "$MODEL_TEST" | grep -qi "AccessDenied\|not authorized\|not enabled\|model access"; then
   echo "    ❌ Cannot invoke ${MODEL_ID}"
   echo "$MODEL_TEST" | head -2 | sed 's/^/      /'
-  PROBLEMS+=("Bedrock model access denied for ${MODEL_ID} - enable in Bedrock console")
+  PROBLEMS+=("Bedrock model access denied for Claude Sonnet 4.5 - run: ./scripts/enable-model-access.sh (the model access console page has been deprecated)")
+  CLAUDE_DENIED=true
 elif echo "$MODEL_TEST" | grep -qi "throttl"; then
   echo "    ⚠️  Throttled (model is accessible but rate-limited)"
 elif [ -s "${CLAUDE_RESP}" ]; then
@@ -371,7 +373,7 @@ EMBED_TEST=$(aws bedrock-runtime invoke-model \
 if echo "$EMBED_TEST" | grep -qi "AccessDenied\|not authorized\|not enabled\|model access"; then
   echo "    ❌ Cannot invoke Titan Embed V2"
   echo "$EMBED_TEST" | head -2 | sed 's/^/      /'
-  PROBLEMS+=("Titan Embed V2 access denied - enable in Bedrock console (needed for seed data)")
+  PROBLEMS+=("Titan Embed V2 access denied - run: ./scripts/enable-model-access.sh (needed for seed data)")
 elif [ -s "${TITAN_RESP}" ]; then
   echo "    ✓ Titan Embed V2 accessible"
 else
@@ -386,9 +388,41 @@ if [ ${#PROBLEMS[@]} -eq 0 ]; then
   echo "║   ✓ All checks passed                                        ║"
   echo "╚══════════════════════════════════════════════════════════════╝"
 else
-  echo "║   ⚠️  ${#PROBLEMS[@]} issue(s) found                                       ║"
-  echo "╚══════════════════════════════════════════════════════════════╝"
-  for i in "${!PROBLEMS[@]}"; do
-    echo "  $((i+1)). ${PROBLEMS[$i]}"
-  done
+  # If Claude access is denied, that's almost certainly the root cause for any
+  # 500/Lambda/invocation symptoms - report it as primary and surface others as cascading.
+  if [ "${CLAUDE_DENIED:-false}" = "true" ]; then
+    echo "║   🎯 Root cause identified                                   ║"
+    echo "╚══════════════════════════════════════════════════════════════╝"
+    echo ""
+    echo "  Claude Sonnet 4.5 model access is DENIED in this account."
+    echo "  This explains the runtime 500s, Lambda errors, and failed invocations."
+    echo ""
+    echo "  ► Fix: ./scripts/enable-model-access.sh"
+    echo ""
+    echo "  After model access is granted (~2 min), re-run troubleshoot to verify."
+
+    # Show other distinct issues only if they're not symptoms of the access denial
+    OTHER=()
+    for p in "${PROBLEMS[@]}"; do
+      case "$p" in
+        *"Bedrock model access denied for Claude"*) ;;
+        *"HTTP 500"*|*"Live agent invocation failed"*|*"Lambda has errors"*|*"Application errors logged"*|*"fell back to error"*) ;;
+        *) OTHER+=("$p") ;;
+      esac
+    done
+
+    if [ ${#OTHER[@]} -gt 0 ]; then
+      echo ""
+      echo "  Additional issues (independent of model access):"
+      for i in "${!OTHER[@]}"; do
+        echo "    $((i+1)). ${OTHER[$i]}"
+      done
+    fi
+  else
+    echo "║   ⚠️  ${#PROBLEMS[@]} issue(s) found                                       ║"
+    echo "╚══════════════════════════════════════════════════════════════╝"
+    for i in "${!PROBLEMS[@]}"; do
+      echo "  $((i+1)). ${PROBLEMS[$i]}"
+    done
+  fi
 fi

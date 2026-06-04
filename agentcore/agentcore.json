@@ -18,7 +18,7 @@
       "envVars": [
         { "name": "AWS_REGION", "value": "us-west-2" },
         { "name": "VECTOR_BUCKET_NAME", "value": "party-supply-vectors" },
-        { "name": "MEMORY_NAME", "value": "PartySupplyMemory" }
+        { "name": "MEMORY_ID", "value": "PartySupply_PartySupplyMemory-X26wfJ8Qci" }
       ]
     }
   ],

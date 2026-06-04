@@ -17,7 +17,19 @@ interface Message {
 
 const GATEWAY_URL = import.meta.env.VITE_GATEWAY_URL || "";
 
+// Generate a unique session ID for this chat session (persists across page reloads)
+function getOrCreateSessionId(): string {
+  const storageKey = "chat_session_id";
+  let sessionId = sessionStorage.getItem(storageKey);
+  if (!sessionId) {
+    sessionId = `session-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    sessionStorage.setItem(storageKey, sessionId);
+  }
+  return sessionId;
+}
+
 export function ChatWindow() {
+  const [sessionId] = useState(() => getOrCreateSessionId());
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "welcome",
@@ -84,6 +96,11 @@ export function ChatWindow() {
     const startTime = Date.now();
 
     try {
+      // Build conversation history from previous messages (exclude welcome message and current)
+      const conversationHistory = messages
+        .filter((m) => m.id !== "welcome" && (m.role === "user" || m.role === "assistant"))
+        .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+
       const mcpUrl = `${GATEWAY_URL}/mcp`;
       const body = JSON.stringify({
         jsonrpc: "2.0",
@@ -93,6 +110,8 @@ export function ChatWindow() {
           name: "PartySupplyTarget___chat",
           arguments: {
             prompt: userMessage.content,
+            sessionId: sessionId,
+            conversationHistory: conversationHistory,
           },
         },
       });

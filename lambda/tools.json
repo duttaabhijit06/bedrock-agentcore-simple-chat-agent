@@ -8,6 +8,26 @@
         "prompt": {
           "type": "string",
           "description": "The user's message or question about party supplies, orders, or event planning"
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "Optional session ID to maintain conversation context across multiple messages"
+        },
+        "conversationHistory": {
+          "type": "array",
+          "description": "Previous messages in the conversation for context",
+          "items": {
+            "type": "object",
+            "properties": {
+              "role": {
+                "type": "string",
+                "enum": ["user", "assistant"]
+              },
+              "content": {
+                "type": "string"
+              }
+            }
+          }
         }
       },
       "required": ["prompt"]

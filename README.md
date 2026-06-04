@@ -26,12 +26,9 @@ flowchart LR
 - AWS CLI v2 ([Install Guide](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html))
 - Node.js 20+ and npm 9+
 - Docker (local testing only; CodeBuild handles remote builds)
-- AgentCore CLI:
-  ```bash
-  npm install -g @aws/agentcore @aws-sdk/region-config-resolver
-  ```
+- AgentCore CLI: `npm install -g @aws/agentcore`
 
-> **Note:** npm deprecation warnings (e.g., `glob@10.5.0`) from `@aws/agentcore` are suppressed via `.npmrc` and do not affect functionality. The `@aws-sdk/region-config-resolver` is required as a peer dependency for the AgentCore CLI.
+> **Note:** npm deprecation warnings (e.g., `glob@10.5.0`) from `@aws/agentcore` are suppressed via `.npmrc` and do not affect functionality.
 
 ### AWS Credentials
 
@@ -45,54 +42,12 @@ aws sts get-caller-identity
 
 ### Model Access
 
-The agent uses two Bedrock foundation models:
+Enable in the [Bedrock console](https://console.aws.amazon.com/bedrock/) (us-west-2):
 
-| Model | ID | Subscription |
-|-------|----|----|
-| Claude Sonnet 4.5 | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | Required (Anthropic FTU form + agreement) |
-| Titan Text Embeddings V2 | `amazon.titan-embed-text-v2:0` | Available by default in most accounts |
-
-AWS has deprecated the Bedrock Model Access console page — model access must now be managed via API/CLI. Use the helper script:
-
-```bash
-./scripts/enable-model-access.sh
-```
-
-This script:
-1. Prompts for Anthropic First-Time-Use form details (required once per account)
-2. Subscribes the account to Claude Sonnet 4.5 (and Titan if not already enabled)
-3. Polls for `AVAILABLE` status (up to 2 minutes)
-
-**Example interactive run:**
-
-```text
-[1/4] Anthropic First-Time-Use Form
-  Enter your company/organization name: Acme Party Co
-  Enter company website (or GitHub/portfolio URL): https://github.com/acme/party-agent
-  Industry (e.g., Technology, Retail, Education): Retail
-  Briefly describe your use case (one line):
-  > Demo agent for party supply discovery using RAG and AgentCore Memory
-  ✓ Form submitted successfully
-
-[2/4] Subscribe to Claude Sonnet 4.5
-  Status: NOT_AVAILABLE - subscribing...
-  ✓ Subscription request submitted
-
-[3/4] Subscribe to Titan Embed V2
-  ✓ Already subscribed
-
-[4/4] Waiting for subscriptions to finalize (up to 2 minutes)...
-  Checking Claude Sonnet 4.5...
-    ✓ Claude Sonnet 4.5 is AVAILABLE
-  Checking Titan Embed V2...
-    ✓ Titan Embed V2 is AVAILABLE
-```
-
-**Requirements:**
-- AWS CLI v2.27.42 or later (`aws --version`)
-- IAM permissions: `aws-marketplace:Subscribe`, `aws-marketplace:ViewSubscriptions` — or attach the AWS managed policy `AmazonBedrockFullAccess`
-
-> **Note:** Subscriptions usually complete within 2 minutes. If model access was triggered automatically by an invocation (instead of via this script), it can take up to 15 minutes to finalize.
+| Model | ID |
+|-------|----|
+| Claude Sonnet 4.5 | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` |
+| Titan Text Embeddings V2 | `amazon.titan-embed-text-v2:0` |
 
 ## Quick Start
 
@@ -103,13 +58,10 @@ npm install && cd agent && npm install && cd ../chat-ui && npm install && cd ..
 # 2. Login
 aws login && export AWS_REGION=us-west-2
 
-# 3. Enable Bedrock model access (one-time per account)
-./scripts/enable-model-access.sh
-
-# 4. Deploy
+# 3. Deploy
 ./scripts/deploy.sh --all
 
-# 5. Run UI
+# 4. Run UI
 ./scripts/run-local-ui.sh --port 3000
 ```
 
@@ -121,35 +73,87 @@ The deploy script handles everything: seed data generation, S3 Vectors, agent ru
 
 | Script | Purpose |
 |--------|---------|
-| `./scripts/enable-model-access.sh` | Subscribe AWS account to Bedrock models (one-time) |
 | `./scripts/deploy.sh --all` | Full deployment |
-| `./scripts/deploy.sh --all --suffix dev` | Deploy with 'dev' suffix (multiple stacks in same account) |
 | `./scripts/deploy.sh --agent` | Deploy agent + gateway + memory only |
 | `./scripts/deploy.sh --lambda --gateway-target` | Redeploy Lambda + rewire |
 | `./scripts/deploy.sh --status` | Show status + update UI config |
-| `./scripts/troubleshoot.sh` | Diagnose deployment issues (9 checks) |
+| `./scripts/import-csv.sh` | Import customer CSV data (see below) |
+| `./scripts/flush-indexes.sh` | Clear S3 Vector indexes |
 | `./scripts/run-local-ui.sh` | Start chat UI locally |
 | `./scripts/cleanup.sh` | Tear down all resources (correct order) |
-| `./scripts/cleanup.sh --suffix dev` | Tear down 'dev' deployment |
 
 Run `./scripts/deploy.sh --help` for all switches.
 
-### Multiple Deployments
+## Importing Customer Data
 
-Use `--suffix` to deploy multiple independent stacks in the same AWS account:
+The agent supports importing your own product catalog and customer profiles from CSV files. This enables personalized recommendations based on customer preferences, purchase history, and segmentation.
 
-```bash
-# Deploy dev environment
-./scripts/deploy.sh --all --suffix dev
+### CSV Formats
 
-# Deploy staging environment
-./scripts/deploy.sh --all --suffix staging
-
-# Clean up specific environment
-./scripts/cleanup.sh --suffix dev
+**Products CSV** - Your product catalog with fields like:
+```
+ITEM_ID,TITLE,DESCRIPTION,PRICE,AVAILABILITY,CATEGORY_L1,CATEGORY_L2,THEME,COLOR,...
 ```
 
-Each suffix creates unique resource names (stack, bucket, Lambda, IAM roles).
+**Customers CSV** - Customer profiles for personalization:
+```
+USER_ID,CUSTOMER_TYPE,CUSTOMER_SEGMENT,PREFERRED_THEME,PRICE_AFFINITY,LIFETIME_SPEND,...
+```
+
+See [`scripts/import-csv-data.ts`](scripts/import-csv-data.ts) for the full list of supported fields.
+
+### Import Workflow
+
+```bash
+# Step 1: Convert CSV to JSON only
+./scripts/import-csv.sh -p products.csv -c customers.csv
+
+# Step 2: Convert + generate embeddings
+./scripts/import-csv.sh -p products.csv -c customers.csv -g
+
+# Step 3: Full pipeline - CSV → JSON → Embeddings → Upload to S3 Vectors
+./scripts/import-csv.sh -p products.csv -c customers.csv -g -u
+```
+
+| Flag | Description |
+|------|-------------|
+| `-p, --products <file>` | Path to products CSV file |
+| `-c, --customers <file>` | Path to customers CSV file |
+| `-o, --output <dir>` | Output directory (default: `./seed-data`) |
+| `-g, --generate` | Generate embeddings using Amazon Titan |
+| `-u, --upload` | Upload vectors to S3 Vectors (requires `-g`) |
+| `--mode <mode>` | Upload mode: `upsert` (default), `replace`, `append` |
+| `--region <region>` | AWS region (default: us-west-2) |
+
+### Upload Modes
+
+| Mode | Behavior |
+|------|----------|
+| `upsert` | Update existing keys, add new keys, keep others (default) |
+| `replace` | Delete and recreate indexes, then insert fresh data |
+| `append` | Only insert new keys, skip existing ones |
+
+```bash
+# Replace all existing data with new CSV data
+./scripts/import-csv.sh -p products.csv -c customers.csv -g -u --mode replace
+```
+
+### Customer Personalization
+
+When a `userId` is passed in the chat request, the agent automatically:
+1. Looks up the customer profile from S3 Vectors
+2. Injects preferences (theme, category, price affinity) into the system prompt
+3. Personalizes recommendations based on the profile
+
+If `userId` is not provided or the profile doesn't exist, the agent continues normally without personalization - no errors or interruptions.
+
+**Example request with userId:**
+```json
+{
+  "prompt": "Show me party supplies for a birthday",
+  "userId": "93107547"
+}
+```
 
 ## Project Structure
 
@@ -172,7 +176,9 @@ Each suffix creates unique resource names (stack, bucket, Lambda, IAM roles).
 │   ├── deploy.sh
 │   ├── cleanup.sh
 │   ├── run-local-ui.sh
-│   └── generate-seed-data.ts
+│   ├── import-csv.sh            # Import customer CSV data
+│   ├── import-csv-data.ts       # CSV to JSON converter
+│   └── generate-seed-data.ts    # Generate embeddings
 ├── docs/
 │   ├── iam-policy.json       # Least-privilege IAM policy
 │   ├── adding-tools.md       # Guide: adding new tools

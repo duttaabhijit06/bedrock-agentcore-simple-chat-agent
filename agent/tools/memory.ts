@@ -18,7 +18,8 @@ import {
 } from "@aws-sdk/client-bedrock-agentcore";
 
 const REGION = process.env.AWS_REGION || "us-west-2";
-const MEMORY_NAME = process.env.MEMORY_NAME || "PartySupplyMemory";
+// Memory ID includes the project prefix and suffix added by AgentCore
+const MEMORY_ID = process.env.MEMORY_ID || "PartySupply_PartySupplyMemory-X26wfJ8Qci";
 
 const client = new BedrockAgentCoreClient({ region: REGION });
 
@@ -35,7 +36,7 @@ export async function storeConversationEvent(
   try {
     await client.send(
       new CreateEventCommand({
-        memoryId: MEMORY_NAME,
+        memoryId: MEMORY_ID,
         actorId,
         sessionId,
         eventTimestamp: new Date(),
@@ -67,7 +68,7 @@ export async function retrieveMemories(
   try {
     const response = await client.send(
       new RetrieveMemoryRecordsCommand({
-        memoryId: MEMORY_NAME,
+        memoryId: MEMORY_ID,
         namespace: `/preferences/${actorId}/`,
         searchCriteria: {
           searchQuery: query,
@@ -103,7 +104,7 @@ export async function getRecentEvents(
   try {
     const response = await client.send(
       new ListEventsCommand({
-        memoryId: MEMORY_NAME,
+        memoryId: MEMORY_ID,
         sessionId,
         actorId,
         maxResults: maxEvents,

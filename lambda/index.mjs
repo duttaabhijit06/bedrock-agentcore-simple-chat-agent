@@ -30,14 +30,23 @@ export const handler = async (event, context) => {
   console.log("Event:", JSON.stringify(event));
 
   const prompt = event.prompt || event.message || "Hello";
+  // Use provided sessionId or generate one from Lambda request context
+  const sessionId = event.sessionId || context.awsRequestId || `session-${Date.now()}`;
+  // Conversation history from UI (array of {role, content} objects)
+  const conversationHistory = event.conversationHistory || [];
+
+  console.log("Session ID:", sessionId);
+  console.log("History length:", conversationHistory.length);
 
   try {
-    const payloadBody = JSON.stringify({ prompt });
+    // Include sessionId and history in the payload so the agent can use it
+    const payloadBody = JSON.stringify({ prompt, sessionId, conversationHistory });
 
     const command = new InvokeAgentRuntimeCommand({
       agentRuntimeArn: RUNTIME_ARN,
       payload: payloadBody,
       qualifier: "DEFAULT",
+      sessionId: sessionId,
     });
 
     const response = await client.send(command);

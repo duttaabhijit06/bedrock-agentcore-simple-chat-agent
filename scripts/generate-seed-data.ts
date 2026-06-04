@@ -1,16 +1,25 @@
 /**
- * Generate Synthetic Seed Data with Embeddings
+ * Generate Seed Data with Embeddings
  *
- * Creates party supply product and order data, generates embeddings
- * using Amazon Titan Text Embeddings V2, and outputs JSON files
- * ready for upload to S3 Vectors.
+ * Creates party supply product, order, and customer profile data,
+ * generates embeddings using Amazon Titan Text Embeddings V2,
+ * and outputs JSON files ready for upload to S3 Vectors.
+ *
+ * Supports both built-in sample data and imported CSV data.
+ *
+ * Usage:
+ *   npx tsx scripts/generate-seed-data.ts [--use-imported]
+ *
+ * Options:
+ *   --use-imported  Use data from *-raw.json files (from import-csv-data.ts)
+ *                   instead of built-in sample data
  */
 
 import {
   BedrockRuntimeClient,
   InvokeModelCommand,
 } from "@aws-sdk/client-bedrock-runtime";
-import { writeFileSync, mkdirSync, existsSync } from "fs";
+import { writeFileSync, readFileSync, mkdirSync, existsSync } from "fs";
 
 const REGION = process.env.AWS_REGION || "us-west-2";
 const EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v2:0";
@@ -18,20 +27,92 @@ const OUTPUT_DIR = "./seed-data";
 
 const bedrockClient = new BedrockRuntimeClient({ region: REGION });
 
-// ─── Synthetic Product Data ─────────────────────────────────────────────────
+// ─── Type Definitions ───────────────────────────────────────────────────────
 
+/**
+ * Extended Product interface supporting both simple and rich schemas
+ */
 interface Product {
   id: string;
+  itemGroupId?: string;
+  mpn?: string;
   name: string;
-  category: string;
-  theme: string;
+  manufacturer?: string;
+  brand?: string;
+  imageLink?: string;
+  productLink?: string;
   description: string;
   price: number;
+  salePrice?: number;
+  productType?: string;
+  category?: string; // Simple schema
+  categoryL1?: string;
+  categoryL2?: string;
+  categoryL3?: string;
+  categoryL4?: string;
+  categoryL5?: string;
   inStock: boolean;
-  quantity: number;
+  quantity?: number;
+  reviewRating?: number;
+  color?: string;
+  material?: string;
+  theme?: string;
+  occasion?: string;
+  holiday?: string;
+  forWhom?: string;
+  ageGroup?: string;
+  gender?: string;
+  size?: string;
+  industryType?: string;
+  businessUnit?: string;
+  isBundle?: boolean;
+  isBulk?: boolean;
+  isOnSale?: boolean;
 }
 
-const products: Product[] = [
+/**
+ * Order interface
+ */
+interface Order {
+  id: string;
+  customerId: string;
+  customerName: string;
+  items: { productId: string; productName: string; quantity: number; price: number }[];
+  total: number;
+  status: string;
+  orderDate: string;
+  deliveryDate: string;
+  shippingAddress: string;
+  notes: string;
+}
+
+/**
+ * Customer profile interface
+ */
+interface CustomerProfile {
+  userId: string;
+  customerType?: string;
+  customerSegment?: string;
+  businessUnit?: string;
+  preferredCategoryL1?: string;
+  preferredCategoryL2?: string;
+  preferredOccasion?: string;
+  preferredTheme?: string;
+  priceAffinity?: string;
+  discountAffinity?: string;
+  region?: string;
+  state?: string;
+  accountAgeDays?: number;
+  lifetimeOrderCount?: number;
+  lifetimeSpend?: number;
+  avgOrderValue?: number;
+  daysSinceLastOrder?: number;
+  emailOptIn?: boolean;
+}
+
+// ─── Sample Data ────────────────────────────────────────────────────────────
+
+const sampleProducts: Product[] = [
   {
     id: "PROD-001",
     name: "Rainbow Balloon Arch Kit",
@@ -254,22 +335,7 @@ const products: Product[] = [
   },
 ];
 
-// ─── Synthetic Order Data ───────────────────────────────────────────────────
-
-interface Order {
-  id: string;
-  customerId: string;
-  customerName: string;
-  items: { productId: string; productName: string; quantity: number; price: number }[];
-  total: number;
-  status: string;
-  orderDate: string;
-  deliveryDate: string;
-  shippingAddress: string;
-  notes: string;
-}
-
-const orders: Order[] = [
+const sampleOrders: Order[] = [
   {
     id: "ORD-10001",
     customerId: "CUST-201",
@@ -423,6 +489,58 @@ const orders: Order[] = [
   },
 ];
 
+const sampleCustomers: CustomerProfile[] = [
+  {
+    userId: "CUST-201",
+    customerType: "CONSUMER",
+    customerSegment: "CONSUMER",
+    preferredCategoryL1: "Party Packs",
+    preferredTheme: "Birthday",
+    priceAffinity: "MID",
+    region: "Portland",
+    state: "OR",
+    accountAgeDays: 365,
+    lifetimeOrderCount: 5,
+    lifetimeSpend: 450.00,
+    avgOrderValue: 90.00,
+    daysSinceLastOrder: 30,
+    emailOptIn: true,
+  },
+  {
+    userId: "CUST-202",
+    customerType: "CONSUMER",
+    customerSegment: "CONSUMER",
+    preferredCategoryL1: "Decorations",
+    preferredTheme: "Wedding",
+    priceAffinity: "HIGH",
+    region: "Seattle",
+    state: "WA",
+    accountAgeDays: 180,
+    lifetimeOrderCount: 2,
+    lifetimeSpend: 300.00,
+    avgOrderValue: 150.00,
+    daysSinceLastOrder: 15,
+    emailOptIn: true,
+  },
+  {
+    userId: "CUST-206",
+    customerType: "BUSINESS",
+    customerSegment: "B2B",
+    businessUnit: "Corporate",
+    preferredCategoryL1: "Banners",
+    preferredTheme: "Corporate",
+    priceAffinity: "BULK",
+    region: "San Francisco",
+    state: "CA",
+    accountAgeDays: 730,
+    lifetimeOrderCount: 24,
+    lifetimeSpend: 8500.00,
+    avgOrderValue: 354.00,
+    daysSinceLastOrder: 45,
+    emailOptIn: true,
+  },
+];
+
 // ─── Embedding Generation ───────────────────────────────────────────────────
 
 async function generateEmbedding(text: string): Promise<number[]> {
@@ -444,8 +562,46 @@ async function generateEmbedding(text: string): Promise<number[]> {
   return responseBody.embedding;
 }
 
+/**
+ * Convert product to searchable text for embedding
+ * Handles both simple and rich schemas
+ */
 function productToText(product: Product): string {
-  return `Product: ${product.name}. Category: ${product.category}. Theme: ${product.theme}. Description: ${product.description}. Price: $${product.price}. ${product.inStock ? "In stock" : "Out of stock"}, quantity: ${product.quantity}.`;
+  const parts: string[] = [`Product: ${product.name}`];
+
+  // Category (support both schemas)
+  const category = product.category || product.categoryL1;
+  if (category) parts.push(`Category: ${category}`);
+  if (product.categoryL2) parts.push(`> ${product.categoryL2}`);
+  if (product.categoryL3) parts.push(`> ${product.categoryL3}`);
+
+  // Theme and occasion
+  if (product.theme) parts.push(`Theme: ${product.theme}`);
+  if (product.occasion) parts.push(`Occasion: ${product.occasion}`);
+  if (product.holiday) parts.push(`Holiday: ${product.holiday}`);
+
+  // Description
+  parts.push(`Description: ${product.description}`);
+
+  // Price
+  parts.push(`Price: $${product.price}`);
+  if (product.salePrice) parts.push(`Sale Price: $${product.salePrice}`);
+
+  // Attributes
+  if (product.color) parts.push(`Color: ${product.color}`);
+  if (product.material) parts.push(`Material: ${product.material}`);
+  if (product.forWhom) parts.push(`For: ${product.forWhom}`);
+  if (product.ageGroup) parts.push(`Age Group: ${product.ageGroup}`);
+
+  // Availability
+  parts.push(product.inStock ? "In stock" : "Out of stock");
+  if (product.quantity !== undefined) parts.push(`Quantity: ${product.quantity}`);
+
+  // Brand/manufacturer
+  if (product.brand) parts.push(`Brand: ${product.brand}`);
+  if (product.manufacturer) parts.push(`Manufacturer: ${product.manufacturer}`);
+
+  return parts.join(". ");
 }
 
 function orderToText(order: Order): string {
@@ -455,128 +611,358 @@ function orderToText(order: Order): string {
   return `Order ${order.id} by ${order.customerName}. Items: ${itemsList}. Total: $${order.total}. Status: ${order.status}. Ordered: ${order.orderDate}. Delivery: ${order.deliveryDate}. Address: ${order.shippingAddress}. Notes: ${order.notes}`;
 }
 
+/**
+ * Convert customer profile to searchable text for embedding
+ */
+function customerToText(customer: CustomerProfile): string {
+  const parts: string[] = [`Customer: ${customer.userId}`];
+
+  if (customer.customerType) parts.push(`Type: ${customer.customerType}`);
+  if (customer.customerSegment) parts.push(`Segment: ${customer.customerSegment}`);
+
+  // Preferences
+  if (customer.preferredCategoryL1) parts.push(`Preferred Category: ${customer.preferredCategoryL1}`);
+  if (customer.preferredTheme) parts.push(`Preferred Theme: ${customer.preferredTheme}`);
+  if (customer.preferredOccasion) parts.push(`Preferred Occasion: ${customer.preferredOccasion}`);
+
+  // Price sensitivity
+  if (customer.priceAffinity) parts.push(`Price Affinity: ${customer.priceAffinity}`);
+  if (customer.discountAffinity) parts.push(`Discount Affinity: ${customer.discountAffinity}`);
+
+  // Location
+  if (customer.region && customer.state) {
+    parts.push(`Location: ${customer.region}, ${customer.state}`);
+  }
+
+  // Engagement metrics
+  if (customer.lifetimeOrderCount !== undefined) {
+    parts.push(`Orders: ${customer.lifetimeOrderCount}`);
+  }
+  if (customer.lifetimeSpend !== undefined) {
+    parts.push(`Lifetime Spend: $${customer.lifetimeSpend}`);
+  }
+  if (customer.avgOrderValue !== undefined) {
+    parts.push(`Avg Order: $${customer.avgOrderValue}`);
+  }
+  if (customer.daysSinceLastOrder !== undefined) {
+    parts.push(`Days Since Last Order: ${customer.daysSinceLastOrder}`);
+  }
+
+  return parts.join(". ");
+}
+
+/**
+ * Convert product to metadata for vector storage
+ */
+function productToMetadata(product: Product): Record<string, string> {
+  const metadata: Record<string, string> = {
+    name: product.name,
+    description: product.description,
+    price: String(product.price),
+    inStock: String(product.inStock),
+  };
+
+  // Add optional fields if present
+  if (product.category) metadata.category = product.category;
+  if (product.categoryL1) metadata.categoryL1 = product.categoryL1;
+  if (product.categoryL2) metadata.categoryL2 = product.categoryL2;
+  if (product.categoryL3) metadata.categoryL3 = product.categoryL3;
+  if (product.theme) metadata.theme = product.theme;
+  if (product.occasion) metadata.occasion = product.occasion;
+  if (product.holiday) metadata.holiday = product.holiday;
+  if (product.color) metadata.color = product.color;
+  if (product.material) metadata.material = product.material;
+  if (product.forWhom) metadata.forWhom = product.forWhom;
+  if (product.ageGroup) metadata.ageGroup = product.ageGroup;
+  if (product.gender) metadata.gender = product.gender;
+  if (product.brand) metadata.brand = product.brand;
+  if (product.manufacturer) metadata.manufacturer = product.manufacturer;
+  if (product.imageLink) metadata.imageLink = product.imageLink;
+  if (product.productLink) metadata.productLink = product.productLink;
+  if (product.salePrice) metadata.salePrice = String(product.salePrice);
+  if (product.reviewRating !== undefined) metadata.reviewRating = String(product.reviewRating);
+  if (product.quantity !== undefined) metadata.quantity = String(product.quantity);
+  if (product.industryType) metadata.industryType = product.industryType;
+  if (product.businessUnit) metadata.businessUnit = product.businessUnit;
+
+  return metadata;
+}
+
+/**
+ * Convert customer to metadata for vector storage
+ */
+function customerToMetadata(customer: CustomerProfile): Record<string, string> {
+  const metadata: Record<string, string> = {
+    userId: customer.userId,
+  };
+
+  if (customer.customerType) metadata.customerType = customer.customerType;
+  if (customer.customerSegment) metadata.customerSegment = customer.customerSegment;
+  if (customer.businessUnit) metadata.businessUnit = customer.businessUnit;
+  if (customer.preferredCategoryL1) metadata.preferredCategoryL1 = customer.preferredCategoryL1;
+  if (customer.preferredCategoryL2) metadata.preferredCategoryL2 = customer.preferredCategoryL2;
+  if (customer.preferredOccasion) metadata.preferredOccasion = customer.preferredOccasion;
+  if (customer.preferredTheme) metadata.preferredTheme = customer.preferredTheme;
+  if (customer.priceAffinity) metadata.priceAffinity = customer.priceAffinity;
+  if (customer.discountAffinity) metadata.discountAffinity = customer.discountAffinity;
+  if (customer.region) metadata.region = customer.region;
+  if (customer.state) metadata.state = customer.state;
+  if (customer.accountAgeDays !== undefined) metadata.accountAgeDays = String(customer.accountAgeDays);
+  if (customer.lifetimeOrderCount !== undefined) metadata.lifetimeOrderCount = String(customer.lifetimeOrderCount);
+  if (customer.lifetimeSpend !== undefined) metadata.lifetimeSpend = String(customer.lifetimeSpend);
+  if (customer.avgOrderValue !== undefined) metadata.avgOrderValue = String(customer.avgOrderValue);
+  if (customer.daysSinceLastOrder !== undefined) metadata.daysSinceLastOrder = String(customer.daysSinceLastOrder);
+  if (customer.emailOptIn !== undefined) metadata.emailOptIn = String(customer.emailOptIn);
+
+  return metadata;
+}
+
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 async function main() {
+  const args = process.argv.slice(2);
+  const useImported = args.includes("--use-imported");
+
+  // Check for specific data type flags (used by import-csv.sh)
+  // If --only-products or --only-customers is passed, only generate those types
+  const onlyProducts = args.includes("--only-products");
+  const onlyCustomers = args.includes("--only-customers");
+  const onlyOrders = args.includes("--only-orders");
+  const hasOnlyFlags = onlyProducts || onlyCustomers || onlyOrders;
+
+  // Determine what to generate
+  const generateProducts = !hasOnlyFlags || onlyProducts;
+  const generateOrders = !hasOnlyFlags || onlyOrders;
+  const generateCustomers = !hasOnlyFlags || onlyCustomers;
+
   console.log("🎉 Generating Party Supply Seed Data with Embeddings\n");
   console.log(`Region: ${REGION}`);
   console.log(`Embedding Model: ${EMBEDDING_MODEL_ID}`);
-  console.log(`Output Directory: ${OUTPUT_DIR}\n`);
+  console.log(`Output Directory: ${OUTPUT_DIR}`);
+  console.log(`Data Source: ${useImported ? "Imported CSV data" : "Built-in sample data"}`);
+  if (hasOnlyFlags) {
+    const types = [
+      generateProducts && "products",
+      generateOrders && "orders",
+      generateCustomers && "customers"
+    ].filter(Boolean).join(", ");
+    console.log(`Generating: ${types}`);
+  }
+  console.log("");
 
   // Create output directory
   if (!existsSync(OUTPUT_DIR)) {
     mkdirSync(OUTPUT_DIR, { recursive: true });
   }
 
+  // Load data (imported or sample)
+  let products: Product[] = [];
+  let orders: Order[] = [];
+  let customers: CustomerProfile[] = [];
+
+  if (useImported) {
+    // Load from imported JSON files - only load what we need to generate
+    const productsPath = `${OUTPUT_DIR}/products-raw.json`;
+    const ordersPath = `${OUTPUT_DIR}/orders-raw.json`;
+    const customersPath = `${OUTPUT_DIR}/customers-raw.json`;
+
+    if (generateProducts) {
+      products = existsSync(productsPath)
+        ? JSON.parse(readFileSync(productsPath, "utf-8"))
+        : [];
+      if (products.length === 0 && !hasOnlyFlags) {
+        console.warn("⚠️  No products found in products-raw.json, using sample data");
+        products = sampleProducts;
+      }
+    }
+
+    if (generateOrders) {
+      orders = existsSync(ordersPath)
+        ? JSON.parse(readFileSync(ordersPath, "utf-8"))
+        : [];
+      if (orders.length === 0 && !hasOnlyFlags) {
+        console.warn("⚠️  No orders found in orders-raw.json, using sample data");
+        orders = sampleOrders;
+      }
+    }
+
+    if (generateCustomers) {
+      customers = existsSync(customersPath)
+        ? JSON.parse(readFileSync(customersPath, "utf-8"))
+        : [];
+      if (customers.length === 0 && !hasOnlyFlags) {
+        console.warn("⚠️  No customers found in customers-raw.json, using sample data");
+        customers = sampleCustomers;
+      }
+    }
+  } else {
+    products = generateProducts ? sampleProducts : [];
+    orders = generateOrders ? sampleOrders : [];
+    customers = generateCustomers ? sampleCustomers : [];
+  }
+
   // Generate product embeddings
-  console.log("📦 Generating product embeddings...");
   const productVectors: Array<{
     key: string;
     vector: number[];
     metadata: Record<string, string>;
   }> = [];
 
-  for (const product of products) {
-    const text = productToText(product);
-    console.log(`  Embedding: ${product.name}`);
-    const embedding = await generateEmbedding(text);
+  if (products.length > 0) {
+    console.log("📦 Generating product embeddings...");
+    for (const product of products) {
+      const text = productToText(product);
+      console.log(`  Embedding: ${product.name}`);
+      const embedding = await generateEmbedding(text);
 
-    productVectors.push({
-      key: product.id,
-      vector: embedding,
-      metadata: {
-        name: product.name,
-        category: product.category,
-        theme: product.theme,
-        description: product.description,
-        price: String(product.price),
-        inStock: String(product.inStock),
-        quantity: String(product.quantity),
-      },
-    });
+      productVectors.push({
+        key: product.id,
+        vector: embedding,
+        metadata: productToMetadata(product),
+      });
 
-    // Rate limiting - Titan embeddings has RPM limits
-    await new Promise((resolve) => setTimeout(resolve, 200));
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
   }
 
   // Generate order embeddings
-  console.log("\n📋 Generating order embeddings...");
   const orderVectors: Array<{
     key: string;
     vector: number[];
     metadata: Record<string, string>;
   }> = [];
 
-  for (const order of orders) {
-    const text = orderToText(order);
-    console.log(`  Embedding: ${order.id} - ${order.customerName}`);
-    const embedding = await generateEmbedding(text);
+  if (orders.length > 0) {
+    console.log("\n📋 Generating order embeddings...");
+    for (const order of orders) {
+      const text = orderToText(order);
+      console.log(`  Embedding: ${order.id} - ${order.customerName}`);
+      const embedding = await generateEmbedding(text);
 
-    orderVectors.push({
-      key: order.id,
-      vector: embedding,
-      metadata: {
-        orderId: order.id,
-        customerId: order.customerId,
-        customerName: order.customerName,
-        items: JSON.stringify(order.items),
-        total: String(order.total),
-        status: order.status,
-        orderDate: order.orderDate,
-        deliveryDate: order.deliveryDate,
-        shippingAddress: order.shippingAddress,
-        notes: order.notes,
-      },
-    });
+      orderVectors.push({
+        key: order.id,
+        vector: embedding,
+        metadata: {
+          orderId: order.id,
+          customerId: order.customerId,
+          customerName: order.customerName,
+          items: JSON.stringify(order.items),
+          total: String(order.total),
+          status: order.status,
+          orderDate: order.orderDate,
+          deliveryDate: order.deliveryDate,
+          shippingAddress: order.shippingAddress,
+          notes: order.notes,
+        },
+      });
 
-    await new Promise((resolve) => setTimeout(resolve, 200));
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
   }
 
-  // Write output files
-  const productsOutput = {
-    indexName: "products-index",
-    vectorBucketName: "party-supply-vectors",
-    dimensions: 1024,
-    distanceMetric: "cosine",
-    vectors: productVectors,
-  };
+  // Generate customer profile embeddings
+  const customerVectors: Array<{
+    key: string;
+    vector: number[];
+    metadata: Record<string, string>;
+  }> = [];
 
-  const ordersOutput = {
-    indexName: "orders-index",
-    vectorBucketName: "party-supply-vectors",
-    dimensions: 1024,
-    distanceMetric: "cosine",
-    vectors: orderVectors,
-  };
+  if (customers.length > 0) {
+    console.log("\n👤 Generating customer profile embeddings...");
+    for (const customer of customers) {
+      const text = customerToText(customer);
+      console.log(`  Embedding: ${customer.userId}`);
+      const embedding = await generateEmbedding(text);
 
-  writeFileSync(
-    `${OUTPUT_DIR}/products-vectors.json`,
-    JSON.stringify(productsOutput, null, 2)
-  );
-  writeFileSync(
-    `${OUTPUT_DIR}/orders-vectors.json`,
-    JSON.stringify(ordersOutput, null, 2)
-  );
+      customerVectors.push({
+        key: customer.userId,
+        vector: embedding,
+        metadata: customerToMetadata(customer),
+      });
 
-  // Also write raw data for reference
-  writeFileSync(
-    `${OUTPUT_DIR}/products-raw.json`,
-    JSON.stringify(products, null, 2)
-  );
-  writeFileSync(
-    `${OUTPUT_DIR}/orders-raw.json`,
-    JSON.stringify(orders, null, 2)
-  );
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
+
+  // Write output files (only for types that were generated)
+  const filesCreated: string[] = [];
+
+  if (productVectors.length > 0) {
+    const productsOutput = {
+      indexName: "products-index",
+      vectorBucketName: "party-supply-vectors",
+      dimensions: 1024,
+      distanceMetric: "cosine",
+      vectors: productVectors,
+    };
+    writeFileSync(
+      `${OUTPUT_DIR}/products-vectors.json`,
+      JSON.stringify(productsOutput, null, 2)
+    );
+    filesCreated.push(`${OUTPUT_DIR}/products-vectors.json`);
+
+    if (!useImported) {
+      writeFileSync(
+        `${OUTPUT_DIR}/products-raw.json`,
+        JSON.stringify(products, null, 2)
+      );
+      filesCreated.push(`${OUTPUT_DIR}/products-raw.json`);
+    }
+  }
+
+  if (orderVectors.length > 0) {
+    const ordersOutput = {
+      indexName: "orders-index",
+      vectorBucketName: "party-supply-vectors",
+      dimensions: 1024,
+      distanceMetric: "cosine",
+      vectors: orderVectors,
+    };
+    writeFileSync(
+      `${OUTPUT_DIR}/orders-vectors.json`,
+      JSON.stringify(ordersOutput, null, 2)
+    );
+    filesCreated.push(`${OUTPUT_DIR}/orders-vectors.json`);
+
+    if (!useImported) {
+      writeFileSync(
+        `${OUTPUT_DIR}/orders-raw.json`,
+        JSON.stringify(orders, null, 2)
+      );
+      filesCreated.push(`${OUTPUT_DIR}/orders-raw.json`);
+    }
+  }
+
+  if (customerVectors.length > 0) {
+    const customersOutput = {
+      indexName: "customers-index",
+      vectorBucketName: "party-supply-vectors",
+      dimensions: 1024,
+      distanceMetric: "cosine",
+      vectors: customerVectors,
+    };
+    writeFileSync(
+      `${OUTPUT_DIR}/customers-vectors.json`,
+      JSON.stringify(customersOutput, null, 2)
+    );
+    filesCreated.push(`${OUTPUT_DIR}/customers-vectors.json`);
+
+    if (!useImported) {
+      writeFileSync(
+        `${OUTPUT_DIR}/customers-raw.json`,
+        JSON.stringify(customers, null, 2)
+      );
+      filesCreated.push(`${OUTPUT_DIR}/customers-raw.json`);
+    }
+  }
 
   console.log(`\n✅ Seed data generated successfully!`);
-  console.log(`   Products: ${productVectors.length} vectors`);
-  console.log(`   Orders: ${orderVectors.length} vectors`);
+  if (productVectors.length > 0) console.log(`   Products: ${productVectors.length} vectors`);
+  if (orderVectors.length > 0) console.log(`   Orders: ${orderVectors.length} vectors`);
+  if (customerVectors.length > 0) console.log(`   Customers: ${customerVectors.length} vectors`);
   console.log(`   Output: ${OUTPUT_DIR}/`);
   console.log(`\nFiles created:`);
-  console.log(`  - ${OUTPUT_DIR}/products-vectors.json`);
-  console.log(`  - ${OUTPUT_DIR}/orders-vectors.json`);
-  console.log(`  - ${OUTPUT_DIR}/products-raw.json`);
-  console.log(`  - ${OUTPUT_DIR}/orders-raw.json`);
+  filesCreated.forEach(f => console.log(`  - ${f}`));
 }
 
 main().catch((err) => {

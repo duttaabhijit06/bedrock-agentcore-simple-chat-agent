@@ -151,14 +151,17 @@ create_zip() {
   shift
   local files=("$@")
 
+  # Remove existing zip file to avoid appending
+  rm -f "$output"
+
   if command -v zip >/dev/null 2>&1; then
     zip -qr "$output" "${files[@]}"
   elif command -v 7z >/dev/null 2>&1; then
-    7z a -tzip "$output" "${files[@]}" > /dev/null
+    7z a -tzip "$output" "${files[@]}" > /dev/null 2>&1
   elif [[ -f "/c/Program Files/7-Zip/7z.exe" ]]; then
-    "/c/Program Files/7-Zip/7z.exe" a -tzip "$output" "${files[@]}" > /dev/null
+    "/c/Program Files/7-Zip/7z.exe" a -tzip "$output" "${files[@]}" > /dev/null 2>&1
   elif [[ -f "/c/Program Files (x86)/7-Zip/7z.exe" ]]; then
-    "/c/Program Files (x86)/7-Zip/7z.exe" a -tzip "$output" "${files[@]}" > /dev/null
+    "/c/Program Files (x86)/7-Zip/7z.exe" a -tzip "$output" "${files[@]}" > /dev/null 2>&1
   else
     echo "  ❌ Error: Neither zip nor 7z found."
     echo "  On Windows, install 7-Zip from https://7-zip.org/"
@@ -561,7 +564,16 @@ step_lambda() {
   LAMBDA_ZIP="./party-supply-lambda.zip"
   pushd lambda > /dev/null
   npm install --omit=dev 2>/dev/null
-  create_zip "../${LAMBDA_ZIP}" index.mjs node_modules/ package.json || exit 1
+  # Verify files exist before zipping
+  if [[ ! -f "package.json" ]]; then
+    echo "  ❌ Error: lambda/package.json not found"
+    exit 1
+  fi
+  if [[ ! -d "node_modules" ]]; then
+    echo "  ❌ Error: lambda/node_modules not found. npm install may have failed."
+    exit 1
+  fi
+  create_zip "../${LAMBDA_ZIP}" index.mjs node_modules package.json || exit 1
   popd > /dev/null
 
   # Create or update Lambda function

@@ -154,8 +154,21 @@ create_zip() {
   # Remove existing zip file to avoid appending
   rm -f "$output"
 
+  # Detect if `zip` is actually 7-Zip in disguise (some Windows users alias/symlink).
+  # Info-ZIP banner includes "Info-ZIP"; 7-Zip banner includes "7-Zip".
+  # Calling with no args prints the banner for both tools.
+  local zip_is_7z=false
   if command -v zip >/dev/null 2>&1; then
+    if zip 2>&1 | head -3 | grep -qi "7-zip"; then
+      zip_is_7z=true
+    fi
+  fi
+
+  if command -v zip >/dev/null 2>&1 && [ "$zip_is_7z" = false ]; then
     zip -qr "$output" "${files[@]}"
+  elif [ "$zip_is_7z" = true ]; then
+    # `zip` resolves to 7-Zip - call it with 7z syntax
+    zip a -tzip "$output" "${files[@]}" > /dev/null 2>&1
   elif command -v 7z >/dev/null 2>&1; then
     7z a -tzip "$output" "${files[@]}" > /dev/null 2>&1
   elif [[ -f "/c/Program Files/7-Zip/7z.exe" ]]; then

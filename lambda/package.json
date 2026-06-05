@@ -1,0 +1,13 @@
+{
+  "name": "party-supply-gateway-handler",
+  "version": "1.0.0",
+  "description": "Gateway Lambda target that invokes the AgentCore Runtime",
+  "type": "module",
+  "main": "index.mjs",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock-agentcore": "^3.1047.0"
+  }
+}

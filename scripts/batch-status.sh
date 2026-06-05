@@ -75,42 +75,51 @@ if [[ "$SHOW_VECTORS" == "true" ]]; then
   echo "                        S3 Vectors Index Status"
   echo "═══════════════════════════════════════════════════════════════════════════════"
   echo ""
+  echo "Note: S3 Vectors has no count API. To verify counts, use list-vectors with"
+  echo "      pagination - which takes ~1 min for 100K+ indexes and is intentionally"
+  echo "      omitted here. This view confirms the index exists and has at least one"
+  echo "      vector."
+  echo ""
 
-  for index_name in "products-index" "customers-index"; do
-    # Check if index exists and get a sample
-    result=$(aws s3vectors list-vectors \
+  # All known indexes (orders-index is seed-only; products/customers come from batch import)
+  for index_name in "products-index" "customers-index" "orders-index"; do
+    # Get index metadata - cheap call, tells us if the index exists
+    index_info=$(aws s3vectors get-index \
+      --vector-bucket-name "$VECTOR_BUCKET" \
+      --index-name "$index_name" \
+      --region "$REGION" 2>/dev/null || echo "")
+
+    if [[ -z "$index_info" ]]; then
+      echo "┌─────────────────────────────────────────────────────────────────────────────"
+      echo "│ ❓ ${index_name} - Not found"
+      echo "└─────────────────────────────────────────────────────────────────────────────"
+      echo ""
+      continue
+    fi
+
+    dimension=$(echo "$index_info" | jq -r '.index.dimension // .dimension // "unknown"')
+    distance=$(echo "$index_info" | jq -r '.index.distanceMetric // .distanceMetric // "unknown"')
+
+    # Single-page sample to detect populated vs empty
+    sample=$(aws s3vectors list-vectors \
       --vector-bucket-name "$VECTOR_BUCKET" \
       --index-name "$index_name" \
       --region "$REGION" \
       --max-results 1 2>/dev/null || echo "")
+    has_vectors=$(echo "$sample" | jq '.vectors | length' 2>/dev/null || echo "0")
 
-    if [[ -n "$result" ]]; then
-      has_vectors=$(echo "$result" | jq '.vectors | length')
-
-      # Get index metadata
-      index_info=$(aws s3vectors get-index \
-        --vector-bucket-name "$VECTOR_BUCKET" \
-        --index-name "$index_name" \
-        --region "$REGION" 2>/dev/null || echo "{}")
-
-      dimension=$(echo "$index_info" | jq -r '.dimension // "unknown"')
-
-      echo "┌─────────────────────────────────────────────────────────────────────────────"
-      echo "│ 📊 ${index_name}"
-      echo "├─────────────────────────────────────────────────────────────────────────────"
-      if [[ "$has_vectors" == "1" ]]; then
-        echo "│   Status:     ✅ Active (contains vectors)"
-      else
-        echo "│   Status:     ⚠️  Empty (no vectors)"
-      fi
-      echo "│   Dimension:  ${dimension}"
-      echo "│   Bucket:     ${VECTOR_BUCKET}"
-      echo "└─────────────────────────────────────────────────────────────────────────────"
+    echo "┌─────────────────────────────────────────────────────────────────────────────"
+    echo "│ 📊 ${index_name}"
+    echo "├─────────────────────────────────────────────────────────────────────────────"
+    if [[ "$has_vectors" == "1" ]]; then
+      echo "│   Status:    ✅ Active (contains vectors)"
     else
-      echo "┌─────────────────────────────────────────────────────────────────────────────"
-      echo "│ ❓ ${index_name} - Not found"
-      echo "└─────────────────────────────────────────────────────────────────────────────"
+      echo "│   Status:    ⚠️  Empty (no vectors)"
     fi
+    echo "│   Dimension: ${dimension}"
+    echo "│   Distance:  ${distance}"
+    echo "│   Bucket:    ${VECTOR_BUCKET}"
+    echo "└─────────────────────────────────────────────────────────────────────────────"
     echo ""
   done
 

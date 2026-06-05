@@ -97,11 +97,17 @@ const colors = [
   "Purple", "Orange", "Yellow", "Multi-Color", "Pastel", "Neon",
   "Rose Gold", "Burgundy", "Teal", "Coral", "Mint", "Navy",
 ];
+// Excluded by design (Bedrock content filters trip on these even at MEDIUM
+// strength because the classifier's training data heavily associates them
+// with adult / underage themes):
+//   - "Bachelor Party", "Bachelorette Party" -> SEXUAL filter
+//   - "Sweet 16", "Quinceañera"               -> SEXUAL (minors-adjacent)
+// Removing them keeps the catalog clean rather than relying on the
+// guardrail to ignore false positives at runtime.
 const occasions = [
   "Wedding", "Birthday Party", "Baby Shower", "Graduation", "Halloween",
   "Christmas", "Easter", "Anniversary", "Retirement", "Bridal Shower",
-  "Engagement", "Bachelorette Party", "Bachelor Party", "Quinceañera",
-  "Sweet 16", "First Birthday", "Cinco de Mayo", "Thanksgiving",
+  "Engagement", "First Birthday", "Cinco de Mayo", "Thanksgiving",
   "New Year", "Valentine's Day", "St. Patrick's Day", "Mother's Day",
   "Father's Day", "Fourth of July", "Hanukkah", "Diwali", "Eid",
 ];

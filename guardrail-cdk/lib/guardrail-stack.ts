@@ -39,18 +39,28 @@ export class GuardrailStack extends cdk.Stack {
       name: "PartySupplyGuardrail",
       description:
         "Content filtering for party supply chat agent - allows religious occasions",
+      // Leading newlines ensure the canned message starts on its own line
+      // when the guardrail truncates a streaming response. Without them,
+      // the block text concatenates onto whatever partial token was last
+      // emitted (e.g., "...Pack - $I'm sorry, I can't provide..."), which
+      // looks corrupted to the customer.
       blockedInputMessaging:
-        "I'm sorry, I can't help with that request. Let me know if you have questions about party supplies!",
+        "\n\nI'm sorry, I can't help with that request. Let me know if you have questions about party supplies!",
       blockedOutputsMessaging:
-        "I'm sorry, I can't provide that information. Is there anything else about party supplies I can help with?",
+        "\n\nI'm sorry, I can't provide that information. Is there anything else about party supplies I can help with?",
 
-      // Content filters - use LOW sensitivity to avoid blocking legitimate party supply queries
-      // Party supplies include themes like Halloween (violence imagery), weddings (romance), etc.
+      // Content filters - tuned for the party-supply domain. Bedrock's
+      // pretrained classifiers tend to false-positive on terms like
+      // "bachelor party" / "bridal shower" / age-related event names
+      // (Sweet 16, etc.) at MEDIUM strength and above. We keep HATE on
+      // HIGH (genuinely harmful and unrelated to the domain) but drop
+      // SEXUAL/VIOLENCE/INSULTS/MISCONDUCT to LOW so legitimate event
+      // descriptions aren't blocked mid-stream.
       contentPolicyConfig: {
         filtersConfig: [
           { type: "HATE", inputStrength: "HIGH", outputStrength: "HIGH" },
           { type: "INSULTS", inputStrength: "LOW", outputStrength: "LOW" },
-          { type: "SEXUAL", inputStrength: "MEDIUM", outputStrength: "MEDIUM" },
+          { type: "SEXUAL", inputStrength: "LOW", outputStrength: "LOW" },
           { type: "VIOLENCE", inputStrength: "LOW", outputStrength: "LOW" },
           { type: "MISCONDUCT", inputStrength: "LOW", outputStrength: "LOW" },
         ],

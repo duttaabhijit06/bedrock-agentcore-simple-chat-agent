@@ -2,16 +2,59 @@ import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import { signRequest, getCredentials, setCredentials, clearCredentials } from "../lib/sigv4";
 
+interface FollowupOption {
+  label: string;
+  value: string;
+}
+
+interface FollowupQuestion {
+  id: string;
+  label: string;
+  options: FollowupOption[];
+}
+
+interface Followups {
+  questions: FollowupQuestion[];
+}
+
 interface Message {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
   timestamp: Date;
+  followups?: Followups;
   metadata?: {
     toolsCalled?: string[];
     memoryStored?: boolean;
     memoryRecalled?: string[];
     responseTimeMs?: number;
+  };
+}
+
+/**
+ * Strip out a `<followups>{json}</followups>` block from assistant content
+ * and return both the cleaned text and the parsed structure (or null).
+ */
+function extractFollowups(content: string): {
+  cleaned: string;
+  followups: Followups | null;
+} {
+  const match = content.match(/<followups>([\s\S]*?)<\/followups>/);
+  if (!match) return { cleaned: content, followups: null };
+
+  let parsed: Followups | null = null;
+  try {
+    const obj = JSON.parse(match[1].trim());
+    if (obj && Array.isArray(obj.questions)) {
+      parsed = obj as Followups;
+    }
+  } catch {
+    // Malformed JSON - treat as no followups, leave content as-is for transparency
+  }
+
+  return {
+    cleaned: parsed ? content.replace(match[0], "").trim() : content,
+    followups: parsed,
   };
 }
 
@@ -48,6 +91,12 @@ export function ChatWindow() {
     secretAccessKey: "",
     sessionToken: "",
   });
+  // Per-message chip selections: { messageId -> { questionId -> Set<value> } }
+  const [chipSelections, setChipSelections] = useState<
+    Record<string, Record<string, Set<string>>>
+  >({});
+  // Track which messages have had their followup chips submitted (hide after submit)
+  const [submittedFollowups, setSubmittedFollowups] = useState<Set<string>>(new Set());
   const [copied, setCopied] = useState(false);
 
   const handleCopyCommand = async () => {
@@ -72,8 +121,11 @@ export function ChatWindow() {
     setShowCredentials(false);
   };
 
-  const handleSend = async () => {
-    if (!input.trim() || isLoading) return;
+  const handleSend = async (overrideMessage?: string) => {
+    // overrideMessage is supplied when the user clicks Submit on a followup
+    // chip group. Otherwise we use whatever's in the input box.
+    const messageText = overrideMessage ?? input.trim();
+    if (!messageText || isLoading) return;
 
     const credentials = getCredentials();
     if (!credentials) {
@@ -84,12 +136,12 @@ export function ChatWindow() {
     const userMessage: Message = {
       id: Date.now().toString(),
       role: "user",
-      content: input.trim(),
+      content: messageText,
       timestamp: new Date(),
     };
 
     setMessages((prev) => [...prev, userMessage]);
-    setInput("");
+    if (!overrideMessage) setInput("");
     setIsLoading(true);
     setActivity(["🔐 Signing request with SigV4..."]);
 
@@ -174,11 +226,16 @@ export function ChatWindow() {
         `✅ Response received (${(responseTimeMs / 1000).toFixed(1)}s)`,
       ]);
 
+      // Extract any <followups>...</followups> JSON block - we render it as
+      // chips, not raw text.
+      const { cleaned, followups } = extractFollowups(assistantContent);
+
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: assistantContent,
+        content: cleaned,
         timestamp: new Date(),
+        followups: followups || undefined,
         metadata: {
           toolsCalled: toolsCalled.length > 0 ? toolsCalled : undefined,
           memoryStored: true,
@@ -208,6 +265,47 @@ export function ChatWindow() {
       e.preventDefault();
       handleSend();
     }
+  };
+
+  // Toggle a chip's selected state (multi-select within a question group)
+  const toggleChip = (messageId: string, questionId: string, value: string) => {
+    setChipSelections((prev) => {
+      const forMessage = { ...(prev[messageId] || {}) };
+      const forQuestion = new Set(forMessage[questionId] || []);
+      if (forQuestion.has(value)) {
+        forQuestion.delete(value);
+      } else {
+        forQuestion.add(value);
+      }
+      forMessage[questionId] = forQuestion;
+      return { ...prev, [messageId]: forMessage };
+    });
+  };
+
+  // Submit selected chips: build a natural-language message and call handleSend
+  const submitFollowups = (message: Message) => {
+    if (!message.followups) return;
+    const sel = chipSelections[message.id] || {};
+
+    // Compose a sentence from the selections, e.g.:
+    //   "What's the occasion?: birthday party. What's your budget?: mid-range."
+    const parts: string[] = [];
+    for (const q of message.followups.questions) {
+      const values = Array.from(sel[q.id] || []);
+      if (values.length > 0) {
+        parts.push(`${q.label} ${values.join(", ")}`);
+      }
+    }
+    if (parts.length === 0) return; // nothing selected, no-op
+
+    const composed = parts.join(". ");
+    setSubmittedFollowups((prev) => new Set(prev).add(message.id));
+    handleSend(composed);
+  };
+
+  const isAnyChipSelected = (messageId: string): boolean => {
+    const sel = chipSelections[messageId] || {};
+    return Object.values(sel).some((set) => set.size > 0);
   };
 
   if (showCredentials) {
@@ -287,6 +385,43 @@ export function ChatWindow() {
                   msg.content
                 )}
               </div>
+              {/* Followup chip groups - hidden after submit */}
+              {msg.followups && !submittedFollowups.has(msg.id) && (
+                <div className="followups">
+                  {msg.followups.questions.map((q) => {
+                    const selected = chipSelections[msg.id]?.[q.id] || new Set<string>();
+                    return (
+                      <div key={q.id} className="followup-group">
+                        <div className="followup-label">{q.label}</div>
+                        <div className="followup-chips">
+                          {q.options.map((opt) => {
+                            const isSelected = selected.has(opt.value);
+                            return (
+                              <button
+                                key={opt.value}
+                                type="button"
+                                className={`chip ${isSelected ? "chip-selected" : ""}`}
+                                onClick={() => toggleChip(msg.id, q.id, opt.value)}
+                                disabled={isLoading}
+                              >
+                                {opt.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    className="followup-submit"
+                    onClick={() => submitFollowups(msg)}
+                    disabled={!isAnyChipSelected(msg.id) || isLoading}
+                  >
+                    Submit selections
+                  </button>
+                </div>
+              )}
               {msg.metadata && (
                 <div className="message-meta">
                   {msg.metadata.toolsCalled && (
@@ -345,7 +480,7 @@ export function ChatWindow() {
           disabled={isLoading}
         />
         <button
-          onClick={handleSend}
+          onClick={() => handleSend()}
           disabled={isLoading || !input.trim()}
           className="send-button"
           aria-label="Send message"

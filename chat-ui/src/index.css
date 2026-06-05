@@ -285,6 +285,93 @@ body {
   color: #7048e8;
 }
 
+/* Followup chips */
+.followups {
+  margin-top: 0.6rem;
+  padding: 0.6rem;
+  background: #faf7ff;
+  border: 1px dashed #d4c5ff;
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.followup-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.followup-label {
+  font-size: 0.78rem;
+  color: var(--text-light);
+  font-weight: 500;
+}
+
+.followup-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.chip {
+  background: #fff;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.3rem 0.7rem;
+  border-radius: 16px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  font-family: inherit;
+}
+
+.chip:hover:not(:disabled) {
+  background: #f3f0ff;
+  border-color: var(--primary-light);
+}
+
+.chip-selected {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.chip-selected:hover:not(:disabled) {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.chip:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.followup-submit {
+  align-self: flex-start;
+  margin-top: 0.2rem;
+  padding: 0.4rem 0.9rem;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+  font-family: inherit;
+}
+
+.followup-submit:hover:not(:disabled) {
+  background: var(--primary-light);
+}
+
+.followup-submit:disabled {
+  background: #c8c2dc;
+  cursor: not-allowed;
+}
+
 /* Activity log */
 .message-activity {
   align-self: flex-start;

@@ -1,9 +1,6 @@
 #!/bin/bash
 set -euo pipefail
 
-# Disable AWS CLI pager globally
-export AWS_PAGER=""
-
 # ─── Party Supply Chat Agent - Backend Deployment Script ─────────────────────
 # Cross-platform (macOS & Linux) deployment script.
 #
@@ -58,8 +55,6 @@ DO_UPLOAD=false
 DO_AGENT=false
 DO_LAMBDA=false
 DO_GATEWAY_TARGET=false
-DO_BATCH_ASYNC=false
-DO_GUARDRAIL=false
 DO_STATUS=false
 DO_CLEAN=false
 NO_FLAGS=true
@@ -77,8 +72,6 @@ show_help() {
   echo "  --agent            Deploy agent and gateway to AgentCore Runtime"
   echo "  --lambda           Deploy the gateway Lambda function"
   echo "  --gateway-target   Add Lambda as a target on the gateway"
-  echo "  --batch-async      Setup batch import async processing (EventBridge + Step Functions + Lambda)"
-  echo "  --guardrail        Configure Bedrock Guardrail for the agent"
   echo "  --status           Show deployment status"
   echo "  --clean            Tear down all deployed resources"
   echo "  --region REGION    AWS region (default: us-west-2)"
@@ -100,8 +93,6 @@ while [[ $# -gt 0 ]]; do
     --agent)           DO_AGENT=true; NO_FLAGS=false; shift ;;
     --lambda)          DO_LAMBDA=true; NO_FLAGS=false; shift ;;
     --gateway-target)  DO_GATEWAY_TARGET=true; NO_FLAGS=false; shift ;;
-    --batch-async)     DO_BATCH_ASYNC=true; NO_FLAGS=false; shift ;;
-    --guardrail)       DO_GUARDRAIL=true; NO_FLAGS=false; shift ;;
     --status)          DO_STATUS=true; NO_FLAGS=false; shift ;;
     --clean)           DO_CLEAN=true; NO_FLAGS=false; shift ;;
     --region)          REGION="$2"; shift 2 ;;
@@ -132,7 +123,7 @@ get_gateway_id() {
     --output text 2>/dev/null || echo "None")
   if [ "$gw_id" = "None" ] || [ -z "$gw_id" ]; then
     # Fallback: parse agentcore status output
-    gw_id=$(agentcore status 2>&1 | grep -o '([^)]*' | grep -i 'partysupply' | sed 's/(//' | head -1 || echo "")
+    gw_id=$(npx agentcore status 2>&1 | grep -o '([^)]*' | grep -i 'partysupply' | sed 's/(//' | head -1 || echo "")
   fi
   echo "$gw_id"
 }
@@ -180,10 +171,7 @@ step_seed() {
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo "[seed] Generating seed data with Titan Text Embeddings V2..."
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  # Check if all vector files exist (products, orders, customers)
-  if [ -f "seed-data/products-vectors.json" ] && \
-     [ -f "seed-data/orders-vectors.json" ] && \
-     [ -f "seed-data/customers-vectors.json" ]; then
+  if [ -f "seed-data/products-vectors.json" ]; then
     echo "  Seed data exists. Skipping. (Delete seed-data/*.json to regenerate)"
   else
     AWS_REGION="${REGION}" npx --yes tsx scripts/generate-seed-data.ts
@@ -197,18 +185,6 @@ step_vectors() {
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo "[vectors] Creating S3 Vector bucket and indexes..."
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-  # Check if vectors already have data - skip if so to avoid data loss
-  EXISTING_DATA=$(aws s3vectors get-vectors --vector-bucket-name "${VECTOR_BUCKET_NAME}" \
-    --index-name "products-index" --keys '["prod-1"]' \
-    --region "${REGION}" --query "vectors | length(@)" --output text 2>/dev/null || echo "0")
-
-  if [ "$EXISTING_DATA" != "0" ] && [ -n "$EXISTING_DATA" ]; then
-    echo "  Vector indexes already contain data. Skipping to preserve existing data."
-    echo "  (Use --clean first if you want to recreate indexes)"
-    return 0
-  fi
-
   echo "  Creating vector bucket: ${VECTOR_BUCKET_NAME}"
   aws s3vectors create-vector-bucket \
     --vector-bucket-name "${VECTOR_BUCKET_NAME}" \
@@ -229,15 +205,8 @@ step_vectors() {
     --dimension 1024 --distance-metric "cosine" --data-type "float32" \
     --region "${REGION}" 2>/dev/null || echo "  (already exists)"
 
-  echo "  Creating customers-index..."
-  aws s3vectors create-index \
-    --vector-bucket-name "${VECTOR_BUCKET_NAME}" \
-    --index-name "customers-index" \
-    --dimension 1024 --distance-metric "cosine" --data-type "float32" \
-    --region "${REGION}" 2>/dev/null || echo "  (already exists)"
-
   echo "  Waiting for indexes to become active..."
-  for idx_name in "products-index" "orders-index" "customers-index"; do
+  for idx_name in "products-index" "orders-index"; do
     retries=0
     while [ $retries -lt 30 ]; do
       # Try get-index first (faster), fall back to list-indexes (broader CLI support)
@@ -274,17 +243,6 @@ step_upload() {
     echo "  ❌ Seed data not found. Run with --seed first."; exit 1
   fi
 
-  # Check if vectors already have data - skip upload if so
-  EXISTING_DATA=$(aws s3vectors get-vectors --vector-bucket-name "${VECTOR_BUCKET_NAME}" \
-    --index-name "products-index" --keys '["prod-1"]' \
-    --region "${REGION}" --query "vectors | length(@)" --output text 2>/dev/null || echo "0")
-
-  if [ "$EXISTING_DATA" != "0" ] && [ -n "$EXISTING_DATA" ]; then
-    echo "  Vector indexes already contain data. Skipping upload."
-    echo "  (Use --clean first if you want to re-upload)"
-    return 0
-  fi
-
   echo "  Uploading product vectors..."
   node --input-type=module -e "
 import { readFileSync } from 'fs';
@@ -318,28 +276,6 @@ for (let i = 0; i < data.vectors.length; i += 10) {
 }
 console.log('  Orders: done');
 "
-
-  # Upload customers if file exists
-  if [ -f "seed-data/customers-vectors.json" ]; then
-    echo "  Uploading customer vectors..."
-    node --input-type=module -e "
-import { readFileSync } from 'fs';
-import { S3VectorsClient, PutVectorsCommand } from '@aws-sdk/client-s3vectors';
-const client = new S3VectorsClient({ region: '${REGION}' });
-const data = JSON.parse(readFileSync('seed-data/customers-vectors.json', 'utf-8'));
-for (let i = 0; i < data.vectors.length; i += 10) {
-  const batch = data.vectors.slice(i, i + 10);
-  await client.send(new PutVectorsCommand({
-    vectorBucketName: '${VECTOR_BUCKET_NAME}', indexName: 'customers-index',
-    vectors: batch.map(v => ({ key: v.key, data: { float32: v.vector }, metadata: v.metadata })),
-  }));
-  console.log('    Uploaded customers batch ' + (Math.floor(i/10) + 1));
-}
-console.log('  Customers: done');
-"
-  else
-    echo "  Skipping customers (no customers-vectors.json found)"
-  fi
   echo ""
 }
 
@@ -361,35 +297,10 @@ step_agent() {
   echo "  Validating configuration..."
   npx agentcore validate
   echo "  Deploying (container build via CodeBuild, ~3-5 min)..."
-  agentcore deploy --yes
+  npx agentcore deploy
 
-  # Fetch actual Memory ID and update agentcore.json if needed
-  echo "  Checking Memory ID..."
-  MEMORY_ID=$(aws bedrock-agentcore-control list-memories --region "${REGION}" \
-    --query "memories[?contains(id, 'PartySupply_PartySupplyMemory')].id | [0]" \
-    --output text 2>/dev/null || echo "")
-  if [ -n "$MEMORY_ID" ] && [ "$MEMORY_ID" != "None" ]; then
-    # Check if agentcore.json needs updating
-    CURRENT_MEMORY_ID=$(grep -o '"MEMORY_ID"[^}]*"value"[^"]*"[^"]*"' agentcore/agentcore.json 2>/dev/null | grep -o '"value"[^"]*"[^"]*"' | cut -d'"' -f4 || echo "")
-    if [ "$CURRENT_MEMORY_ID" != "$MEMORY_ID" ]; then
-      echo "  Memory ID changed: $CURRENT_MEMORY_ID -> $MEMORY_ID"
-      if command -v jq >/dev/null 2>&1; then
-        jq --arg mid "$MEMORY_ID" '.runtimes[0].envVars = [.runtimes[0].envVars[] | if .name == "MEMORY_ID" then .value = $mid else . end]' agentcore/agentcore.json > agentcore/agentcore.json.tmp && mv agentcore/agentcore.json.tmp agentcore/agentcore.json
-        echo "  Updated agentcore.json with Memory ID: $MEMORY_ID"
-        echo "  Re-deploying agent with updated Memory ID..."
-        agentcore deploy --yes
-      else
-        echo "  WARNING: jq not installed. Please manually update MEMORY_ID in agentcore/agentcore.json to: $MEMORY_ID"
-      fi
-    else
-      echo "  Memory ID is current: $MEMORY_ID"
-    fi
-  else
-    echo "  Warning: Could not fetch Memory ID (memory may not be deployed yet)"
-  fi
-
-  # Add RAG + Memory + Guardrail permissions to the runtime execution role
-  echo "  Adding RAG, Memory, and Guardrail permissions to runtime role..."
+  # Add RAG + Memory permissions to the runtime execution role
+  echo "  Adding RAG and Memory permissions to runtime role..."
   RUNTIME_ROLE=$(aws cloudformation describe-stack-resources \
     --stack-name AgentCore-PartySupply-default --region "${REGION}" \
     --query "StackResources[?contains(LogicalResourceId, 'RuntimeExecutionRole')].PhysicalResourceId | [0]" \
@@ -403,94 +314,8 @@ step_agent() {
           {\"Effect\": \"Allow\", \"Action\": [\"bedrock:InvokeModel\"], \"Resource\": [\"arn:aws:bedrock:${REGION}::foundation-model/*\",\"arn:aws:bedrock:us-*::foundation-model/*\"]},
           {\"Effect\": \"Allow\", \"Action\": [\"bedrock-agentcore:CreateEvent\",\"bedrock-agentcore:ListEvents\",\"bedrock-agentcore:RetrieveMemoryRecords\"], \"Resource\": \"arn:aws:bedrock-agentcore:${REGION}:${ACCOUNT_ID}:*\"}
         ]
-      }" 2>/dev/null && echo "  RAG/Memory permissions added." || echo "  (could not update RAG/Memory permissions)"
-
-    # Add Guardrail permissions (required if using Bedrock Guardrails)
-    aws iam put-role-policy --role-name "$RUNTIME_ROLE" --policy-name "GuardrailAccess" \
-      --policy-document "{
-        \"Version\": \"2012-10-17\",
-        \"Statement\": [{
-          \"Effect\": \"Allow\",
-          \"Action\": [\"bedrock:ApplyGuardrail\", \"bedrock:GetGuardrail\"],
-          \"Resource\": \"arn:aws:bedrock:${REGION}:${ACCOUNT_ID}:guardrail/*\"
-        }]
-      }" 2>/dev/null && echo "  Guardrail permissions added." || echo "  (could not update Guardrail permissions)"
+      }" 2>/dev/null && echo "  Runtime role updated." || echo "  (could not update runtime role)"
   fi
-
-  echo ""
-}
-
-# ─── Step: Deploy Guardrail (Separate CDK) ───────────────────────────────────
-
-step_guardrail() {
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "[guardrail] Deploying Bedrock Guardrail via CDK..."
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-  local CDK_DIR="guardrail-cdk"
-
-  # Install CDK dependencies
-  echo "  Installing CDK dependencies..."
-  if [[ ! -d "${CDK_DIR}/node_modules" ]]; then
-    (cd "$CDK_DIR" && npm install --quiet)
-  fi
-
-  # Deploy guardrail CDK stack
-  echo "  Deploying guardrail stack..."
-  (cd "$CDK_DIR" && npx cdk deploy --require-approval never)
-
-  # Fetch Guardrail ID and Version from CDK stack outputs
-  GUARDRAIL_ID=$(aws cloudformation describe-stacks \
-    --stack-name PartySupply-Guardrail --region "${REGION}" \
-    --query "Stacks[0].Outputs[?OutputKey=='GuardrailId'].OutputValue | [0]" \
-    --output text 2>/dev/null || echo "")
-  GUARDRAIL_VERSION=$(aws cloudformation describe-stacks \
-    --stack-name PartySupply-Guardrail --region "${REGION}" \
-    --query "Stacks[0].Outputs[?OutputKey=='GuardrailVersion'].OutputValue | [0]" \
-    --output text 2>/dev/null || echo "")
-
-  if [ -z "$GUARDRAIL_ID" ] || [ "$GUARDRAIL_ID" = "None" ]; then
-    echo "  ❌ Failed to get guardrail ID from stack outputs."
-    return 1
-  fi
-
-  echo "  Guardrail deployed: ${GUARDRAIL_ID} v${GUARDRAIL_VERSION}"
-
-  # Check if jq is available
-  if ! command -v jq >/dev/null 2>&1; then
-    echo "  WARNING: jq not installed. Please manually add to agentcore/agentcore.json envVars:"
-    echo "    {\"name\": \"GUARDRAIL_ID\", \"value\": \"${GUARDRAIL_ID}\"}"
-    echo "    {\"name\": \"GUARDRAIL_VERSION\", \"value\": \"${GUARDRAIL_VERSION}\"}"
-    return 0
-  fi
-
-  # Update agentcore.json with guardrail env vars
-  CURRENT_GUARDRAIL_ID=$(grep -o '"GUARDRAIL_ID"' agentcore/agentcore.json 2>/dev/null || echo "")
-
-  if [ -z "$CURRENT_GUARDRAIL_ID" ]; then
-    # Add guardrail env vars
-    jq --arg gid "$GUARDRAIL_ID" --arg gv "$GUARDRAIL_VERSION" \
-      '.runtimes[0].envVars += [{"name": "GUARDRAIL_ID", "value": $gid}, {"name": "GUARDRAIL_VERSION", "value": $gv}]' \
-      agentcore/agentcore.json > agentcore/agentcore.json.tmp && mv agentcore/agentcore.json.tmp agentcore/agentcore.json
-    echo "  Added guardrail env vars to agentcore.json"
-  else
-    # Update existing guardrail env vars (check both ID and VERSION)
-    EXISTING_GID=$(jq -r '.runtimes[0].envVars[] | select(.name == "GUARDRAIL_ID") | .value' agentcore/agentcore.json 2>/dev/null || echo "")
-    EXISTING_GV=$(jq -r '.runtimes[0].envVars[] | select(.name == "GUARDRAIL_VERSION") | .value' agentcore/agentcore.json 2>/dev/null || echo "")
-    if [ "$EXISTING_GID" != "$GUARDRAIL_ID" ] || [ "$EXISTING_GV" != "$GUARDRAIL_VERSION" ]; then
-      jq --arg gid "$GUARDRAIL_ID" --arg gv "$GUARDRAIL_VERSION" \
-        '.runtimes[0].envVars = [.runtimes[0].envVars[] | if .name == "GUARDRAIL_ID" then .value = $gid elif .name == "GUARDRAIL_VERSION" then .value = $gv else . end]' \
-        agentcore/agentcore.json > agentcore/agentcore.json.tmp && mv agentcore/agentcore.json.tmp agentcore/agentcore.json
-      echo "  Updated guardrail env vars in agentcore.json (ID: ${GUARDRAIL_ID}, Version: ${GUARDRAIL_VERSION})"
-    else
-      echo "  Guardrail env vars already up to date in agentcore.json"
-    fi
-  fi
-
-  echo ""
-  echo "  ════════════════════════════════════════════════════════════════"
-  echo "  Guardrail deployed! Run --agent next to deploy with guardrails."
-  echo "  ════════════════════════════════════════════════════════════════"
   echo ""
 }
 
@@ -535,10 +360,9 @@ step_lambda() {
 
   # Package Lambda (install deps + zip)
   echo "  Packaging Lambda..."
-  LAMBDA_ZIP="./party-supply-lambda.zip"
   pushd lambda > /dev/null
   npm install --omit=dev 2>/dev/null
-  zip -qr "../${LAMBDA_ZIP}" index.mjs node_modules/ package.json
+  zip -qr /tmp/party-supply-lambda.zip index.mjs node_modules/ package.json
   popd > /dev/null
 
   # Create or update Lambda function
@@ -547,7 +371,7 @@ step_lambda() {
   if aws lambda get-function --function-name "${LAMBDA_NAME}" --region "${REGION}" >/dev/null 2>&1; then
     aws lambda update-function-code \
       --function-name "${LAMBDA_NAME}" \
-      --zip-file "fileb://${LAMBDA_ZIP}" \
+      --zip-file fileb:///tmp/party-supply-lambda.zip \
       --region "${REGION}" > /dev/null
     sleep 5
     aws lambda update-function-configuration \
@@ -561,7 +385,7 @@ step_lambda() {
       --runtime "nodejs20.x" \
       --role "${ROLE_ARN}" \
       --handler "index.handler" \
-      --zip-file "fileb://${LAMBDA_ZIP}" \
+      --zip-file fileb:///tmp/party-supply-lambda.zip \
       --timeout 120 \
       --memory-size 256 \
       --environment "Variables={AGENT_REGION=${REGION},RUNTIME_ARN=${RUNTIME_ARN}}" \
@@ -570,9 +394,6 @@ step_lambda() {
 
   LAMBDA_ARN="arn:aws:lambda:${REGION}:${ACCOUNT_ID}:function:${LAMBDA_NAME}"
   echo "  Lambda ARN: ${LAMBDA_ARN}"
-
-  # Clean up zip file
-  rm -f "${LAMBDA_ZIP}"
 
   # Grant gateway service principal permission to invoke Lambda
   echo "  Adding invoke permissions..."
@@ -583,44 +404,19 @@ step_lambda() {
     --principal "bedrock-agentcore.amazonaws.com" \
     --region "${REGION}" 2>/dev/null || echo "  (service permission exists)"
 
-  # Grant the gateway's execution role permission to invoke the Lambda
-  # Two permissions needed:
-  # 1. Lambda resource policy (allows the role to call the Lambda)
-  # 2. IAM policy on the gateway role (allows the role to invoke Lambda)
+  # Also grant the gateway's own execution role (required for create-gateway-target)
   GATEWAY_ID=$(get_gateway_id)
   if [ -n "$GATEWAY_ID" ] && [ "$GATEWAY_ID" != "None" ]; then
-    GATEWAY_ROLE_ARN=$(aws bedrock-agentcore-control get-gateway \
+    GATEWAY_ROLE=$(aws bedrock-agentcore-control get-gateway \
       --gateway-identifier "${GATEWAY_ID}" \
       --region "${REGION}" --query "roleArn" --output text 2>/dev/null || echo "")
-    if [ -n "$GATEWAY_ROLE_ARN" ] && [ "$GATEWAY_ROLE_ARN" != "None" ]; then
-      # Extract role name from ARN
-      GATEWAY_ROLE_NAME=$(echo "$GATEWAY_ROLE_ARN" | sed 's/.*role\///')
-
-      # Add Lambda resource policy
+    if [ -n "$GATEWAY_ROLE" ] && [ "$GATEWAY_ROLE" != "None" ]; then
       aws lambda add-permission \
         --function-name "${LAMBDA_NAME}" \
         --statement-id "AllowGatewayRole" \
         --action "lambda:InvokeFunction" \
-        --principal "arn:aws:iam::${ACCOUNT_ID}:root" \
-        --source-arn "${GATEWAY_ROLE_ARN}" \
-        --region "${REGION}" 2>/dev/null || echo "  (Lambda resource policy exists)"
-
-      # Add IAM policy to gateway role to invoke Lambda
-      aws iam put-role-policy \
-        --role-name "${GATEWAY_ROLE_NAME}" \
-        --policy-name "InvokeLambda" \
-        --policy-document "{
-          \"Version\": \"2012-10-17\",
-          \"Statement\": [{
-            \"Effect\": \"Allow\",
-            \"Action\": \"lambda:InvokeFunction\",
-            \"Resource\": \"${LAMBDA_ARN}\"
-          }]
-        }" 2>/dev/null && {
-          echo "  Gateway role policy added."
-          echo "  Waiting for IAM policy propagation (10s)..."
-          sleep 10
-        } || echo "  (gateway role policy exists)"
+        --principal "${GATEWAY_ROLE}" \
+        --region "${REGION}" 2>/dev/null || echo "  (gateway role permission exists)"
     fi
   fi
 
@@ -654,28 +450,6 @@ step_gateway_target() {
   if [ "$EXISTING" != "None" ] && [ -n "$EXISTING" ]; then
     echo "  Target 'PartySupplyTarget' already exists. Skipping."
   else
-    # Ensure gateway role has permission to invoke Lambda before creating target
-    echo "  Adding Lambda invoke permission to gateway role..."
-    GATEWAY_ROLE_ARN=$(aws bedrock-agentcore-control get-gateway \
-      --gateway-identifier "${GATEWAY_ID}" \
-      --region "${REGION}" --query "roleArn" --output text 2>/dev/null || echo "")
-    if [ -n "$GATEWAY_ROLE_ARN" ] && [ "$GATEWAY_ROLE_ARN" != "None" ]; then
-      GATEWAY_ROLE_NAME=$(echo "$GATEWAY_ROLE_ARN" | sed 's/.*role\///')
-      aws iam put-role-policy \
-        --role-name "${GATEWAY_ROLE_NAME}" \
-        --policy-name "InvokeLambda" \
-        --policy-document "{
-          \"Version\": \"2012-10-17\",
-          \"Statement\": [{
-            \"Effect\": \"Allow\",
-            \"Action\": \"lambda:InvokeFunction\",
-            \"Resource\": \"${LAMBDA_ARN}\"
-          }]
-        }" 2>/dev/null && echo "  Gateway role policy added." || echo "  (gateway role policy exists)"
-      echo "  Waiting for IAM policy propagation (10s)..."
-      sleep 10
-    fi
-
     echo "  Creating Lambda target on gateway..."
     TOOL_SCHEMA=$(cat lambda/tools.json)
 
@@ -799,71 +573,6 @@ step_clean() {
   echo ""
 }
 
-# ─── Step: Batch Async Processing (CDK) ──────────────────────────────────────
-
-step_batch_async() {
-  echo "╔══════════════════════════════════════════════════════════════╗"
-  echo "║   Setting up Batch Async Processing (CDK)                   ║"
-  echo "╚══════════════════════════════════════════════════════════════╝"
-
-  local ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-  local BUCKET_NAME="party-supply-batch-${ACCOUNT_ID}-${REGION}"
-  local CDK_DIR="batch-cdk"
-
-  # 1. Install CDK dependencies
-  echo "  Installing CDK dependencies..."
-  if [[ ! -d "${CDK_DIR}/node_modules" ]]; then
-    (cd "$CDK_DIR" && npm install --quiet)
-  fi
-
-  # 2. Install Lambda dependencies
-  echo "  Installing Lambda dependencies..."
-  if [[ ! -d "scripts/batch-result-lambda/node_modules" ]]; then
-    (cd scripts/batch-result-lambda && npm install --omit=dev --quiet)
-  fi
-
-  # 3. Create S3 bucket and upload Glue scripts (CDK needs scripts in S3)
-  echo "  Preparing S3 bucket for Glue scripts..."
-  if ! aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
-    if [[ "$REGION" == "us-east-1" ]]; then
-      aws s3api create-bucket --bucket "$BUCKET_NAME" --region "$REGION"
-    else
-      aws s3api create-bucket --bucket "$BUCKET_NAME" --region "$REGION" \
-        --create-bucket-configuration LocationConstraint="$REGION"
-    fi
-  fi
-
-  aws s3 cp glue-jobs/dedup-prepare.py "s3://${BUCKET_NAME}/glue-scripts/dedup-prepare.py" --quiet
-  aws s3 cp glue-jobs/upload-vectors.py "s3://${BUCKET_NAME}/glue-scripts/upload-vectors.py" --quiet
-
-  # 4. Bootstrap CDK if needed
-  echo "  Checking CDK bootstrap..."
-  if ! aws cloudformation describe-stacks --stack-name CDKToolkit --region "$REGION" 2>/dev/null; then
-    echo "  Bootstrapping CDK..."
-    (cd "$CDK_DIR" && npx cdk bootstrap "aws://${ACCOUNT_ID}/${REGION}")
-  fi
-
-  # 5. Deploy CDK stack
-  echo "  Deploying batch processing stack via CDK..."
-  (cd "$CDK_DIR" && npx cdk deploy --require-approval never)
-
-  echo ""
-  echo "  ════════════════════════════════════════════════════════════════"
-  echo "  Batch async processing setup complete!"
-  echo ""
-  echo "  Flow (orchestrated by Step Functions):"
-  echo "    1. Glue ETL (dedup CSV → JSONL)"
-  echo "    2. Lambda (submit Bedrock Batch jobs)"
-  echo "    3. Step Functions (poll until complete)"
-  echo "    4. Lambda (flush index for replace mode)"
-  echo "    5. Glue Python Shell (upload to S3 Vectors)"
-  echo ""
-  echo "  Usage:"
-  echo "    ./scripts/batch-import.sh -p products.csv --mode replace"
-  echo "    ./scripts/batch-status.sh   # Check progress"
-  echo "  ════════════════════════════════════════════════════════════════"
-}
-
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 print_banner
@@ -885,11 +594,6 @@ if [ "$DO_ALL" = true ] || [ "$DO_UPLOAD" = true ]; then
   step_upload
 fi
 
-# Guardrail must be deployed BEFORE agent so env vars are set in agentcore.json
-if [ "$DO_ALL" = true ] || [ "$DO_GUARDRAIL" = true ]; then
-  step_guardrail
-fi
-
 if [ "$DO_ALL" = true ] || [ "$DO_AGENT" = true ]; then
   step_agent
 fi
@@ -900,10 +604,6 @@ fi
 
 if [ "$DO_ALL" = true ] || [ "$DO_GATEWAY_TARGET" = true ]; then
   step_gateway_target
-fi
-
-if [ "$DO_BATCH_ASYNC" = true ]; then
-  step_batch_async
 fi
 
 if [ "$DO_ALL" = true ] || [ "$DO_STATUS" = true ]; then

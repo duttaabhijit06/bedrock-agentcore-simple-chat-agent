@@ -195,6 +195,14 @@ print_banner() {
   echo "╚══════════════════════════════════════════════════════════════╝"
   echo ""
 
+  # Bootstrap agentcore.json from the committed example if missing.
+  # The real file is gitignored because deploy.sh rewrites it with
+  # account-specific resource IDs after each deploy.
+  if [ ! -f "agentcore/agentcore.json" ] && [ -f "agentcore/agentcore.json.example" ]; then
+    echo "  Bootstrapping agentcore/agentcore.json from agentcore.json.example..."
+    cp agentcore/agentcore.json.example agentcore/agentcore.json
+  fi
+
   # Install root dependencies if missing
   if [ ! -d "node_modules" ]; then
     echo "  Installing root dependencies..."

@@ -26,11 +26,11 @@
         },
         {
           "name": "MEMORY_ID",
-          "value": "PartySupply_PartySupplyMemory-qpa6yhCmEq"
+          "value": "PartySupply_PartySupplyMemory-XXXXXXXXXX"
         },
         {
           "name": "GUARDRAIL_ID",
-          "value": "pdtnq9v7fxyh"
+          "value": "REPLACE_AFTER_DEPLOY"
         },
         {
           "name": "GUARDRAIL_VERSION",

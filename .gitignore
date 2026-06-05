@@ -79,3 +79,11 @@ refresh_aws_credentials.sh
 
 # Claude agent SDK local state
 .claude/
+
+# AgentCore runtime config gets rewritten by deploy.sh with account-specific
+# resource IDs (memory ID, guardrail ID, account/region). Local-only.
+# A baseline agentcore.json.example is committed for new clones.
+agentcore/agentcore.json
+
+# Root package-lock - dependency drift varies per environment
+package-lock.json

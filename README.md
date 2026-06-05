@@ -53,8 +53,43 @@ flowchart LR
 - Node.js 20+ and npm 9+
 - Docker (local testing only; CodeBuild handles remote builds)
 - AgentCore CLI: `npm install -g @aws/agentcore`
+- A POSIX shell (Git Bash, WSL, or any Linux/macOS shell) — PowerShell is not supported
+- `zip` or `7-Zip` for Lambda packaging
+- `jq` for JSON parsing in deploy/cleanup scripts
 
 > **Note:** npm deprecation warnings (e.g., `glob@10.5.0`) from `@aws/agentcore` are suppressed via `.npmrc` and do not affect functionality.
+
+### Windows Setup
+
+All scripts assume a POSIX environment. On Windows, run them from **Git Bash** or **WSL2**, not PowerShell or `cmd.exe`. After installing Git for Windows you'll get Git Bash automatically.
+
+You'll also need three command-line tools that aren't bundled with Git Bash. The cleanest way is via [Chocolatey](https://chocolatey.org/install) (a package manager for Windows). Open an **elevated PowerShell** once to install Chocolatey, then everything else can be done from Git Bash:
+
+```bash
+# Install jq (used by deploy.sh / batch-status.sh / troubleshoot.sh for JSON parsing)
+choco install jq -y
+
+# Install 7-Zip (used by deploy.sh as the zip backend on Windows)
+choco install 7zip -y
+```
+
+After install, open a **new Git Bash window** so PATH picks up the new binaries. Verify:
+
+```bash
+jq --version    # should print jq-1.x
+7z              # should print "7-Zip ..."
+```
+
+The deploy script's [`create_zip` helper](scripts/deploy.sh#L150) auto-detects 7-Zip even when no `zip` command exists. If you (or a teammate) have already created an alias or symlink that maps `zip` to 7-Zip, the helper will detect that too via the banner string and route to 7-Zip syntax automatically — no extra setup required.
+
+If `choco` isn't an option in your environment, alternative install paths:
+
+| Tool | winget | Manual |
+|---|---|---|
+| 7-Zip | `winget install 7zip.7zip` | Download from [7-zip.org/download.html](https://7-zip.org/download.html) and use defaults (installs to `C:\Program Files\7-Zip\`) |
+| jq | `winget install jqlang.jq` | Download `jq.exe` from [jqlang.github.io/jq](https://jqlang.github.io/jq/download/) and place on PATH |
+
+The deploy script also looks for `7z.exe` at `C:\Program Files\7-Zip\` and `C:\Program Files (x86)\7-Zip\` as fallbacks, so a default 7-Zip install works without any PATH manipulation.
 
 ### AWS Credentials
 

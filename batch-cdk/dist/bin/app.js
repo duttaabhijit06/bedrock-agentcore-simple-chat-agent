@@ -1,0 +1,15 @@
+#!/usr/bin/env node
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+require("source-map-support/register");
+const cdk = require("aws-cdk-lib");
+const batch_processing_stack_1 = require("../lib/batch-processing-stack");
+const app = new cdk.App();
+new batch_processing_stack_1.BatchProcessingStack(app, "PartySupplyBatchStack", {
+    env: {
+        account: process.env.CDK_DEFAULT_ACCOUNT,
+        region: process.env.AWS_REGION || process.env.CDK_DEFAULT_REGION || "us-west-2",
+    },
+    description: "Party Supply batch processing infrastructure (Glue, Lambda, Step Functions)",
+});
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiYXBwLmpzIiwic291cmNlUm9vdCI6IiIsInNvdXJjZXMiOlsiLi4vLi4vYmluL2FwcC50cyJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiOzs7QUFDQSx1Q0FBcUM7QUFDckMsbUNBQW1DO0FBQ25DLDBFQUFxRTtBQUVyRSxNQUFNLEdBQUcsR0FBRyxJQUFJLEdBQUcsQ0FBQyxHQUFHLEVBQUUsQ0FBQztBQUUxQixJQUFJLDZDQUFvQixDQUFDLEdBQUcsRUFBRSx1QkFBdUIsRUFBRTtJQUNyRCxHQUFHLEVBQUU7UUFDSCxPQUFPLEVBQUUsT0FBTyxDQUFDLEdBQUcsQ0FBQyxtQkFBbUI7UUFDeEMsTUFBTSxFQUFFLE9BQU8sQ0FBQyxHQUFHLENBQUMsVUFBVSxJQUFJLE9BQU8sQ0FBQyxHQUFHLENBQUMsa0JBQWtCLElBQUksV0FBVztLQUNoRjtJQUNELFdBQVcsRUFBRSw2RUFBNkU7Q0FDM0YsQ0FBQyxDQUFDIiwic291cmNlc0NvbnRlbnQiOlsiIyEvdXNyL2Jpbi9lbnYgbm9kZVxuaW1wb3J0IFwic291cmNlLW1hcC1zdXBwb3J0L3JlZ2lzdGVyXCI7XG5pbXBvcnQgKiBhcyBjZGsgZnJvbSBcImF3cy1jZGstbGliXCI7XG5pbXBvcnQgeyBCYXRjaFByb2Nlc3NpbmdTdGFjayB9IGZyb20gXCIuLi9saWIvYmF0Y2gtcHJvY2Vzc2luZy1zdGFja1wiO1xuXG5jb25zdCBhcHAgPSBuZXcgY2RrLkFwcCgpO1xuXG5uZXcgQmF0Y2hQcm9jZXNzaW5nU3RhY2soYXBwLCBcIlBhcnR5U3VwcGx5QmF0Y2hTdGFja1wiLCB7XG4gIGVudjoge1xuICAgIGFjY291bnQ6IHByb2Nlc3MuZW52LkNES19ERUZBVUxUX0FDQ09VTlQsXG4gICAgcmVnaW9uOiBwcm9jZXNzLmVudi5BV1NfUkVHSU9OIHx8IHByb2Nlc3MuZW52LkNES19ERUZBVUxUX1JFR0lPTiB8fCBcInVzLXdlc3QtMlwiLFxuICB9LFxuICBkZXNjcmlwdGlvbjogXCJQYXJ0eSBTdXBwbHkgYmF0Y2ggcHJvY2Vzc2luZyBpbmZyYXN0cnVjdHVyZSAoR2x1ZSwgTGFtYmRhLCBTdGVwIEZ1bmN0aW9ucylcIixcbn0pO1xuIl19

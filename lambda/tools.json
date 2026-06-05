@@ -21,7 +21,7 @@
             "properties": {
               "role": {
                 "type": "string",
-                "enum": ["user", "assistant"]
+                "description": "Either 'user' or 'assistant'"
               },
               "content": {
                 "type": "string"

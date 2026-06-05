@@ -10,8 +10,14 @@
  */
 
 import { BedrockAgentCoreApp } from "bedrock-agentcore/runtime";
-import { Agent, tool, Message, TextBlock } from "@strands-agents/sdk";
+import { Agent, tool, Message, TextBlock, BedrockModel } from "@strands-agents/sdk";
 import { z } from "zod";
+
+// ─── Guardrail Configuration ────────────────────────────────────────────────
+// Guardrail ID and version are set via environment variables during deployment
+// These are created by the agentcore CDK stack
+const GUARDRAIL_ID = process.env.GUARDRAIL_ID;
+const GUARDRAIL_VERSION = process.env.GUARDRAIL_VERSION;
 import {
   ragSearch,
   searchProducts,
@@ -255,8 +261,37 @@ function createAgentWithHistory(
 
   console.log(`  Creating agent with ${messages.length} history messages`);
 
+  // Configure BedrockModel with optional guardrail
+  // Guardrail config is passed via additionalArgs to the Converse API
+  const modelConfig: {
+    modelId: string;
+    additionalArgs?: {
+      guardrailConfig?: {
+        guardrailIdentifier: string;
+        guardrailVersion: string;
+        trace?: string;
+      };
+    };
+  } = {
+    modelId: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+  };
+
+  // Add guardrail if configured via environment variables
+  if (GUARDRAIL_ID && GUARDRAIL_VERSION) {
+    console.log(`  Using guardrail: ${GUARDRAIL_ID} v${GUARDRAIL_VERSION}`);
+    modelConfig.additionalArgs = {
+      guardrailConfig: {
+        guardrailIdentifier: GUARDRAIL_ID,
+        guardrailVersion: GUARDRAIL_VERSION,
+        trace: "enabled",
+      },
+    };
+  }
+
+  const model = new BedrockModel(modelConfig);
+
   return new Agent({
-    model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    model,
     tools: [searchProductsTool, searchOrdersTool, searchAllTool, lookupCustomerTool, recallMemoryTool],
     systemPrompt,
     messages,

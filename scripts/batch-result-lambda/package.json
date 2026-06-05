@@ -1,0 +1,14 @@
+{
+  "name": "batch-result-processor",
+  "version": "1.0.0",
+  "description": "Lambda functions for batch processing pipeline",
+  "type": "module",
+  "main": "index.mjs",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.600.0",
+    "@aws-sdk/client-bedrock": "^3.600.0",
+    "@aws-sdk/client-glue": "^3.600.0",
+    "@aws-sdk/client-s3vectors": "^3.600.0",
+    "@aws-sdk/client-sts": "^3.600.0"
+  }
+}

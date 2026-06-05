@@ -16,9 +16,26 @@
       "networkMode": "PUBLIC",
       "protocol": "HTTP",
       "envVars": [
-        { "name": "AWS_REGION", "value": "us-west-2" },
-        { "name": "VECTOR_BUCKET_NAME", "value": "party-supply-vectors" },
-        { "name": "MEMORY_ID", "value": "PartySupply_PartySupplyMemory-X26wfJ8Qci" }
+        {
+          "name": "AWS_REGION",
+          "value": "us-west-2"
+        },
+        {
+          "name": "VECTOR_BUCKET_NAME",
+          "value": "party-supply-vectors"
+        },
+        {
+          "name": "MEMORY_ID",
+          "value": "PartySupply_PartySupplyMemory-qpa6yhCmEq"
+        },
+        {
+          "name": "GUARDRAIL_ID",
+          "value": "pdtnq9v7fxyh"
+        },
+        {
+          "name": "GUARDRAIL_VERSION",
+          "value": "1"
+        }
       ]
     }
   ],
@@ -30,17 +47,23 @@
         {
           "type": "SEMANTIC",
           "name": "FactExtractor",
-          "namespaces": ["/facts/{actorId}/"]
+          "namespaces": [
+            "/facts/{actorId}/"
+          ]
         },
         {
           "type": "SUMMARIZATION",
           "name": "SessionSummarizer",
-          "namespaces": ["/summaries/{actorId}/{sessionId}/"]
+          "namespaces": [
+            "/summaries/{actorId}/{sessionId}/"
+          ]
         },
         {
           "type": "USER_PREFERENCE",
           "name": "PreferenceLearner",
-          "namespaces": ["/preferences/{actorId}/"]
+          "namespaces": [
+            "/preferences/{actorId}/"
+          ]
         }
       ]
     }

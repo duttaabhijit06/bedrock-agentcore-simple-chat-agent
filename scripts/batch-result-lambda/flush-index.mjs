@@ -1,0 +1,69 @@
+/**
+ * Lambda: Flush S3 Vectors Index (for replace mode)
+ *
+ * Deletes and recreates the index before uploading new vectors.
+ *
+ * Input:
+ *   { dataType: "products" | "customers" }
+ *
+ * Output:
+ *   { success: boolean, indexName: string }
+ */
+
+import {
+  S3VectorsClient,
+  DeleteIndexCommand,
+  CreateIndexCommand,
+} from "@aws-sdk/client-s3vectors";
+
+const REGION = process.env.AWS_REGION;
+const VECTOR_BUCKET = process.env.VECTOR_BUCKET || "party-supply-vectors";
+
+const s3VectorsClient = new S3VectorsClient({ region: REGION });
+
+export const handler = async (event) => {
+  const { dataType } = event;
+  const indexName = `${dataType}-index`;
+
+  console.log(`Flushing index: ${indexName} in bucket: ${VECTOR_BUCKET}`);
+
+  try {
+    // Delete existing index
+    console.log("  Deleting existing index...");
+    await s3VectorsClient.send(
+      new DeleteIndexCommand({
+        vectorBucketName: VECTOR_BUCKET,
+        indexName: indexName,
+      })
+    );
+    console.log("  Index deleted");
+  } catch (error) {
+    if (error.name === "ResourceNotFoundException" || error.message?.includes("not found")) {
+      console.log("  Index doesn't exist, creating new");
+    } else {
+      console.error(`  Error deleting index: ${error.message}`);
+      throw error;
+    }
+  }
+
+  // Wait for deletion to propagate
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+
+  // Create new index
+  console.log("  Creating new index...");
+  await s3VectorsClient.send(
+    new CreateIndexCommand({
+      vectorBucketName: VECTOR_BUCKET,
+      indexName: indexName,
+      dimension: 1024,
+      distanceMetric: "cosine",
+      dataType: "float32",
+    })
+  );
+  console.log("  Index created successfully");
+
+  return {
+    success: true,
+    indexName: indexName,
+  };
+};

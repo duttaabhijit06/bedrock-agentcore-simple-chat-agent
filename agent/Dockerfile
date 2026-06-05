@@ -2,9 +2,12 @@ FROM public.ecr.aws/docker/library/node:20-slim AS builder
 
 WORKDIR /app
 COPY package*.json ./
-COPY tsconfig.json ./
 RUN npm ci --legacy-peer-deps
 COPY . .
+# tsconfig.json may be excluded by agentcore CLI, create inline if missing
+RUN if [ ! -f tsconfig.json ]; then \
+  echo '{"compilerOptions":{"target":"ES2022","module":"NodeNext","moduleResolution":"NodeNext","outDir":"./dist","rootDir":".","strict":true,"esModuleInterop":true,"skipLibCheck":true,"declaration":true,"resolveJsonModule":true},"include":["*.ts","tools/**/*.ts"],"exclude":["node_modules","dist"]}' > tsconfig.json; \
+fi
 RUN node node_modules/typescript/bin/tsc
 
 FROM public.ecr.aws/docker/library/node:20-slim

@@ -662,7 +662,12 @@ step_lambda() {
   # Lambda's list_customers handler calls ListVectors against the
   # customers index directly (no runtime hop) so the UI's selector can
   # populate without paying a runtime invocation cost.
-  CUSTOMERS_LIST_POLICY="{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"s3vectors:ListVectors\",\"Resource\":\"arn:aws:s3vectors:${REGION}:${ACCOUNT_ID}:bucket/${VECTOR_BUCKET_NAME}*\"}]}"
+  # ListVectors with returnMetadata=true internally also needs GetVectors
+  # against the same bucket - the AWS SDK fans out to fetch each matched
+  # vector's metadata as part of the list response. Without GetVectors,
+  # the call appears to succeed but returns 0 customers with an
+  # AccessDeniedException embedded in the response body.
+  CUSTOMERS_LIST_POLICY="{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"s3vectors:ListVectors\",\"s3vectors:GetVectors\"],\"Resource\":\"arn:aws:s3vectors:${REGION}:${ACCOUNT_ID}:bucket/${VECTOR_BUCKET_NAME}*\"}]}"
   aws iam put-role-policy \
     --role-name "${LAMBDA_ROLE_NAME}" \
     --policy-name "ListCustomersFromS3Vectors" \

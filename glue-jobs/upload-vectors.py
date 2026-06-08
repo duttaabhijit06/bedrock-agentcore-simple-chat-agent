@@ -89,7 +89,14 @@ def stream_jsonl_file(bucket, key):
 
 
 def load_raw_data(bucket, prefix):
-    """Load raw data for metadata enrichment."""
+    """Load raw data for metadata enrichment.
+
+    For products/customers the key is a single column. For interactions
+    the key is a composite of (user, item, timestamp) - same shape as
+    `make_interaction_id` in dedup-prepare.py - because a user can
+    interact with the same item many times and each event needs a
+    distinct vector.
+    """
     raw_data = {}
     files = list_s3_files(bucket, prefix, '.json')
 
@@ -98,6 +105,11 @@ def load_raw_data(bucket, prefix):
             for record in stream_jsonl_file(bucket, key):
                 if data_type == 'products':
                     record_id = record.get('id') or record.get('ITEM_ID')
+                elif data_type == 'interactions':
+                    user_id = record.get('userId') or record.get('USER_ID') or ''
+                    item_id = record.get('itemId') or record.get('ITEM_ID') or ''
+                    timestamp = record.get('timestamp') or record.get('TIMESTAMP') or ''
+                    record_id = f"{user_id}_{item_id}_{timestamp}" if user_id else None
                 else:
                     record_id = record.get('userId') or record.get('USER_ID')
 
@@ -109,12 +121,19 @@ def load_raw_data(bucket, prefix):
 
 
 def product_to_metadata(product):
-    """Convert product to S3 Vectors metadata."""
+    """Convert product to S3 Vectors metadata.
+
+    Preserves LINK and IMAGE_LINK so the chat UI can render product cards
+    with clickable titles and thumbnails. URLs aren't truncated since
+    cropping mid-URL produces a 404; we cap at 500 chars instead.
+    """
     metadata = {
         'name': str(product.get('name') or product.get('TITLE') or '')[:500],
         'description': str(product.get('description') or product.get('DESCRIPTION') or '')[:500],
         'price': str(product.get('price') or product.get('PRICE') or 0),
-        'inStock': str(product.get('inStock') or product.get('AVAILABILITY') or 'true').lower()
+        'inStock': str(product.get('inStock') or product.get('AVAILABILITY') or 'true').lower(),
+        'link': str(product.get('link') or product.get('LINK') or '')[:500],
+        'image': str(product.get('image') or product.get('IMAGE_LINK') or '')[:500],
     }
 
     for field, csv_field in [
@@ -147,6 +166,32 @@ def customer_to_metadata(customer):
     spend = customer.get('lifetimeSpend') or customer.get('LIFETIME_SPEND')
     if spend is not None:
         metadata['lifetimeSpend'] = str(spend)
+
+    return metadata
+
+
+def interaction_to_metadata(interaction):
+    """Convert one interaction event to S3 Vectors metadata.
+
+    Stores all the structured fields the agent will need to filter or
+    summarize: user, item, event type, when, quantity, price, recommendation
+    source. The vector itself captures semantic meaning of the action;
+    metadata is what the agent reads back when QueryVectors returns hits.
+    """
+    metadata = {
+        'userId': str(interaction.get('userId') or interaction.get('USER_ID') or ''),
+        'itemId': str(interaction.get('itemId') or interaction.get('ITEM_ID') or ''),
+    }
+
+    for field, csv_field in [
+        ('eventType', 'EVENT_TYPE'), ('eventValue', 'EVENT_VALUE'),
+        ('quantity', 'QUANTITY'), ('price', 'PRICE'),
+        ('timestamp', 'TIMESTAMP'),
+        ('recommendationId', 'RECOMMENDATION_ID'),
+    ]:
+        val = interaction.get(field) or interaction.get(csv_field)
+        if val is not None and str(val).strip():
+            metadata[field] = str(val).strip()[:100]
 
     return metadata
 
@@ -215,6 +260,8 @@ def main():
             raw_item = raw_data.get(str(record_id), {})
             if data_type == 'products':
                 metadata = product_to_metadata(raw_item) if raw_item else {'id': record_id}
+            elif data_type == 'interactions':
+                metadata = interaction_to_metadata(raw_item) if raw_item else {'eventKey': record_id}
             else:
                 metadata = customer_to_metadata(raw_item) if raw_item else {'userId': record_id}
 

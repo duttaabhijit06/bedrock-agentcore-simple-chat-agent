@@ -110,6 +110,23 @@ interface CustomerProfile {
   emailOptIn?: boolean;
 }
 
+/**
+ * One user-item event. Each row in the customer's interactions CSV (or a
+ * synthesized seed event) becomes one of these. The embedding text and
+ * metadata shape mirror what glue-jobs/dedup-prepare.py and upload-vectors.py
+ * produce, so the seed and the bulk pipeline are interchangeable downstream.
+ */
+interface Interaction {
+  userId: string;
+  itemId: string;
+  timestamp: number; // epoch seconds
+  eventType: "view" | "add_to_cart" | "purchase";
+  eventValue: number;
+  quantity: number;
+  price: number;
+  recommendationId?: string;
+}
+
 // ─── Sample Data ────────────────────────────────────────────────────────────
 
 const sampleProducts: Product[] = [
@@ -717,6 +734,107 @@ function customerToMetadata(customer: CustomerProfile): Record<string, string> {
   return metadata;
 }
 
+// ─── Interaction helpers ────────────────────────────────────────────────────
+//
+// These mirror the Glue jobs (glue-jobs/dedup-prepare.py interaction_to_text
+// and glue-jobs/upload-vectors.py interaction_to_metadata) so the embedding
+// shape matches whether the data comes from this seed script or the bulk
+// pipeline. Keep them in sync if you change one.
+
+const SEED_RECOMMENDATION_SOURCES = [
+  "Recently Viewed",
+  "Frequently Bought Together",
+  "Customers Also Bought",
+  "Trending Now",
+  "Picked For You",
+  "Search Results",
+];
+
+/** Composite vector key. The same user/item pair can recur across events
+ *  (view → cart → purchase), so the timestamp keeps each event distinct. */
+function interactionKey(i: Interaction): string {
+  return `${i.userId}_${i.itemId}_${i.timestamp}`;
+}
+
+function interactionToText(i: Interaction): string {
+  const parts = [`User ${i.userId} performed ${i.eventType} on item ${i.itemId}`];
+  parts.push(`at timestamp ${i.timestamp}`);
+  if (i.quantity > 0) parts.push(`quantity ${i.quantity}`);
+  parts.push(`price $${i.price}`);
+  if (i.recommendationId) parts.push(`via ${i.recommendationId}`);
+  return parts.join(". ");
+}
+
+function interactionToMetadata(i: Interaction): Record<string, string> {
+  const m: Record<string, string> = {
+    userId: i.userId,
+    itemId: i.itemId,
+    timestamp: String(i.timestamp),
+    eventType: i.eventType,
+    eventValue: String(i.eventValue),
+    quantity: String(i.quantity),
+    price: String(i.price),
+  };
+  if (i.recommendationId) m.recommendationId = i.recommendationId;
+  return m;
+}
+
+/**
+ * Synthesize a small set of interaction events for the seed data.
+ *
+ * Each event references real seed products and customers so the agent's
+ * `query_interactions` tool returns coherent results - the agent can
+ * follow up with `search_products` or `lookup_customer` to enrich.
+ *
+ * Distribution roughly mirrors a real funnel (~70% views, ~20% cart,
+ * ~10% purchase) so behavioral queries surface a realistic mix. Events
+ * are spread across the past 60 days.
+ */
+function synthesizeInteractions(
+  customers: CustomerProfile[],
+  products: Product[],
+  count: number
+): Interaction[] {
+  if (customers.length === 0 || products.length === 0 || count <= 0) return [];
+
+  const out: Interaction[] = [];
+  const now = Math.floor(Date.now() / 1000);
+  const SIXTY_DAYS = 60 * 24 * 60 * 60;
+  const eventTypeBag: Interaction["eventType"][] = [
+    // Weighted bag - 7 view, 2 cart, 1 purchase per 10 events on average
+    "view", "view", "view", "view", "view", "view", "view",
+    "add_to_cart", "add_to_cart",
+    "purchase",
+  ];
+  const eventValueByType: Record<Interaction["eventType"], number> = {
+    view: 1.0,
+    add_to_cart: 2.0,
+    purchase: 5.0,
+  };
+
+  for (let i = 0; i < count; i++) {
+    const customer = customers[Math.floor(Math.random() * customers.length)];
+    const product = products[Math.floor(Math.random() * products.length)];
+    const eventType = eventTypeBag[Math.floor(Math.random() * eventTypeBag.length)];
+    const event: Interaction = {
+      userId: customer.userId,
+      itemId: product.id,
+      timestamp: now - Math.floor(Math.random() * SIXTY_DAYS),
+      eventType,
+      eventValue: eventValueByType[eventType],
+      quantity: eventType === "view" ? 0 : 1 + Math.floor(Math.random() * 3),
+      price: product.salePrice ?? product.price,
+      recommendationId:
+        Math.random() < 0.3
+          ? SEED_RECOMMENDATION_SOURCES[Math.floor(Math.random() * SEED_RECOMMENDATION_SOURCES.length)]
+          : undefined,
+    };
+    out.push(event);
+  }
+
+  return out;
+}
+
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -728,12 +846,45 @@ async function main() {
   const onlyProducts = args.includes("--only-products");
   const onlyCustomers = args.includes("--only-customers");
   const onlyOrders = args.includes("--only-orders");
-  const hasOnlyFlags = onlyProducts || onlyCustomers || onlyOrders;
+  const onlyInteractions = args.includes("--only-interactions");
+  const hasOnlyFlags = onlyProducts || onlyCustomers || onlyOrders || onlyInteractions;
 
-  // Determine what to generate
-  const generateProducts = !hasOnlyFlags || onlyProducts;
-  const generateOrders = !hasOnlyFlags || onlyOrders;
-  const generateCustomers = !hasOnlyFlags || onlyCustomers;
+  // Determine what to generate. Interactions need products + customers as
+  // an ID source, so when --only-interactions is set we still load (but
+  // don't re-embed) the other types from the existing raw JSON files.
+  // --force regenerates outputs even if the *-vectors.json file already
+  // exists. Without it we skip per-type when the file is present, which
+  // keeps "fill in the missing ones" re-runs cheap (only the new
+  // interactions get embedded if the older 3 files are still around).
+  const force = args.includes("--force") || args.includes("--force-regenerate");
+  const productsAlreadyDone = !force && existsSync(`${OUTPUT_DIR}/products-vectors.json`);
+  const ordersAlreadyDone = !force && existsSync(`${OUTPUT_DIR}/orders-vectors.json`);
+  const customersAlreadyDone = !force && existsSync(`${OUTPUT_DIR}/customers-vectors.json`);
+  const interactionsAlreadyDone = !force && existsSync(`${OUTPUT_DIR}/interactions-vectors.json`);
+
+  const generateProducts = (!hasOnlyFlags || onlyProducts) && !productsAlreadyDone;
+  const generateOrders = (!hasOnlyFlags || onlyOrders) && !ordersAlreadyDone;
+  const generateCustomers = (!hasOnlyFlags || onlyCustomers) && !customersAlreadyDone;
+  const generateInteractions = (!hasOnlyFlags || onlyInteractions) && !interactionsAlreadyDone;
+
+  if (productsAlreadyDone || ordersAlreadyDone || customersAlreadyDone || interactionsAlreadyDone) {
+    const skipped: string[] = [];
+    if (productsAlreadyDone) skipped.push("products");
+    if (ordersAlreadyDone) skipped.push("orders");
+    if (customersAlreadyDone) skipped.push("customers");
+    if (interactionsAlreadyDone) skipped.push("interactions");
+    console.log(`Skipping (output already exists): ${skipped.join(", ")}`);
+    console.log("Pass --force to regenerate.");
+  }
+
+  // How many interaction events to synthesize. Default 50 keeps the seed
+  // small and the embedding pass quick (~10s); customers wanting realistic
+  // volume should use the bulk generator (scripts/generate-bulk-csv.ts).
+  const numInteractions = (() => {
+    const i = args.indexOf("--num-interactions");
+    if (i >= 0 && args[i + 1]) return parseInt(args[i + 1], 10);
+    return 50;
+  })();
 
   console.log("🎉 Generating Party Supply Seed Data with Embeddings\n");
   console.log(`Region: ${REGION}`);
@@ -760,13 +911,19 @@ async function main() {
   let orders: Order[] = [];
   let customers: CustomerProfile[] = [];
 
+  // Interactions need a product + customer pool for IDs. Even if the
+  // caller passed --only-interactions we still load those two from raw
+  // JSON / sample so the synthesizer has something to reference.
+  const needProductsForLoad = generateProducts || generateInteractions;
+  const needCustomersForLoad = generateCustomers || generateInteractions;
+
   if (useImported) {
-    // Load from imported JSON files - only load what we need to generate
+    // Load from imported JSON files - only load what we need
     const productsPath = `${OUTPUT_DIR}/products-raw.json`;
     const ordersPath = `${OUTPUT_DIR}/orders-raw.json`;
     const customersPath = `${OUTPUT_DIR}/customers-raw.json`;
 
-    if (generateProducts) {
+    if (needProductsForLoad) {
       products = existsSync(productsPath)
         ? JSON.parse(readFileSync(productsPath, "utf-8"))
         : [];
@@ -786,7 +943,7 @@ async function main() {
       }
     }
 
-    if (generateCustomers) {
+    if (needCustomersForLoad) {
       customers = existsSync(customersPath)
         ? JSON.parse(readFileSync(customersPath, "utf-8"))
         : [];
@@ -796,9 +953,9 @@ async function main() {
       }
     }
   } else {
-    products = generateProducts ? sampleProducts : [];
+    products = needProductsForLoad ? sampleProducts : [];
     orders = generateOrders ? sampleOrders : [];
-    customers = generateCustomers ? sampleCustomers : [];
+    customers = needCustomersForLoad ? sampleCustomers : [];
   }
 
   // Generate product embeddings
@@ -808,7 +965,7 @@ async function main() {
     metadata: Record<string, string>;
   }> = [];
 
-  if (products.length > 0) {
+  if (products.length > 0 && generateProducts) {
     console.log("📦 Generating product embeddings...");
     for (const product of products) {
       const text = productToText(product);
@@ -867,7 +1024,7 @@ async function main() {
     metadata: Record<string, string>;
   }> = [];
 
-  if (customers.length > 0) {
+  if (customers.length > 0 && generateCustomers) {
     console.log("\n👤 Generating customer profile embeddings...");
     for (const customer of customers) {
       const text = customerToText(customer);
@@ -882,6 +1039,34 @@ async function main() {
 
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
+  }
+
+  // Generate interaction event embeddings. Each event references a real
+  // seed product and customer so the agent can cross-reference them.
+  const interactionVectors: Array<{
+    key: string;
+    vector: number[];
+    metadata: Record<string, string>;
+  }> = [];
+  let interactions: Interaction[] = [];
+
+  if (generateInteractions && products.length > 0 && customers.length > 0) {
+    interactions = synthesizeInteractions(customers, products, numInteractions);
+    console.log(`\n🛒 Generating ${interactions.length} interaction embeddings...`);
+    for (const event of interactions) {
+      const text = interactionToText(event);
+      const embedding = await generateEmbedding(text);
+      interactionVectors.push({
+        key: interactionKey(event),
+        vector: embedding,
+        metadata: interactionToMetadata(event),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  } else if (generateInteractions) {
+    console.warn(
+      "⚠️  Skipping interactions: need both products and customers loaded (run without --only-* or with both already present)"
+    );
   }
 
   // Write output files (only for types that were generated)
@@ -956,10 +1141,33 @@ async function main() {
     }
   }
 
+  if (interactionVectors.length > 0) {
+    const interactionsOutput = {
+      indexName: "interactions-index",
+      vectorBucketName: "party-supply-vectors",
+      dimensions: 1024,
+      distanceMetric: "cosine",
+      vectors: interactionVectors,
+    };
+    writeFileSync(
+      `${OUTPUT_DIR}/interactions-vectors.json`,
+      JSON.stringify(interactionsOutput, null, 2)
+    );
+    filesCreated.push(`${OUTPUT_DIR}/interactions-vectors.json`);
+
+    // Also persist the raw events for traceability and re-runs.
+    writeFileSync(
+      `${OUTPUT_DIR}/interactions-raw.json`,
+      JSON.stringify(interactions, null, 2)
+    );
+    filesCreated.push(`${OUTPUT_DIR}/interactions-raw.json`);
+  }
+
   console.log(`\n✅ Seed data generated successfully!`);
   if (productVectors.length > 0) console.log(`   Products: ${productVectors.length} vectors`);
   if (orderVectors.length > 0) console.log(`   Orders: ${orderVectors.length} vectors`);
   if (customerVectors.length > 0) console.log(`   Customers: ${customerVectors.length} vectors`);
+  if (interactionVectors.length > 0) console.log(`   Interactions: ${interactionVectors.length} vectors`);
   console.log(`   Output: ${OUTPUT_DIR}/`);
   console.log(`\nFiles created:`);
   filesCreated.forEach(f => console.log(`  - ${f}`));

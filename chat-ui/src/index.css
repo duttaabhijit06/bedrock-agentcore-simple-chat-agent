@@ -285,6 +285,310 @@ body {
   color: #7048e8;
 }
 
+/* Product cards (rendered for type="answer" with tool results) */
+.product-cards {
+  margin-top: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.product-card {
+  display: flex;
+  gap: 0.7rem;
+  padding: 0.6rem;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  text-decoration: none;
+  color: var(--text);
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+}
+
+.product-card:hover {
+  border-color: var(--primary-light);
+  box-shadow: 0 2px 8px rgba(108, 92, 231, 0.15);
+  transform: translateY(-1px);
+}
+
+.product-card-image {
+  flex-shrink: 0;
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.product-card-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.product-card-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.product-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  font-size: 0.72rem;
+}
+
+.product-card-price {
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.product-card-theme,
+.product-card-category {
+  color: var(--text-light);
+  background: var(--bg);
+  padding: 0.1rem 0.4rem;
+  border-radius: 8px;
+}
+
+.product-card-desc {
+  font-size: 0.72rem;
+  color: var(--text-light);
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* Blocked-message banner styling (type="blocked") */
+.message-blocked .message-text {
+  background: #fff5f5;
+  border: 1px solid #ffd6d6;
+  color: #b71c1c;
+}
+
+.message-blocked .message-avatar {
+  background: #ffe5e5;
+}
+
+/* Customer selector + chat toolbar */
+.chat-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  background: #fafafa;
+  font-size: 0.85rem;
+}
+
+.chat-toolbar-context {
+  color: var(--text);
+}
+
+.chat-toolbar-context strong {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.chat-toolbar-spacer {
+  flex: 1;
+}
+
+.customer-selector {
+  position: relative;
+}
+
+.customer-selector-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.7rem;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--text);
+  font-family: inherit;
+}
+
+.customer-selector-button:hover {
+  border-color: var(--primary-light);
+  background: #faf7ff;
+}
+
+.cs-selected-icon {
+  font-size: 0.95rem;
+}
+
+.cs-selected-id {
+  font-weight: 500;
+}
+
+.cs-selected-segment {
+  color: var(--text-light);
+  font-size: 0.78rem;
+  padding: 0.05rem 0.4rem;
+  background: var(--bg);
+  border-radius: 8px;
+}
+
+.cs-caret {
+  color: var(--text-light);
+  font-size: 0.7rem;
+  margin-left: 0.2rem;
+}
+
+.customer-selector-dropdown {
+  position: absolute;
+  top: calc(100% + 0.3rem);
+  right: 0;
+  width: 380px;
+  max-width: 90vw;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.1);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  max-height: 460px;
+}
+
+.cs-search-row {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.cs-search-input {
+  flex: 1;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  outline: none;
+  font-family: inherit;
+}
+
+.cs-search-input:focus {
+  border-color: var(--primary);
+}
+
+.cs-clear-button {
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: var(--text);
+  font-family: inherit;
+}
+
+.cs-clear-button:hover {
+  background: var(--bg);
+}
+
+.cs-results {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 100px;
+}
+
+.cs-status {
+  padding: 1rem;
+  text-align: center;
+  color: var(--text-light);
+  font-size: 0.85rem;
+}
+
+.cs-status.cs-error {
+  color: #c92a2a;
+}
+
+.cs-status button {
+  margin-left: 0.5rem;
+  padding: 0.2rem 0.6rem;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.cs-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cs-row {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-family: inherit;
+  border-bottom: 1px solid #f3f3f3;
+}
+
+.cs-row:hover {
+  background: #faf7ff;
+}
+
+.cs-row-selected {
+  background: #f3f0ff;
+}
+
+.cs-row-id {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.cs-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  color: var(--text-light);
+}
+
+.cs-row-meta span {
+  background: var(--bg);
+  padding: 0.05rem 0.4rem;
+  border-radius: 6px;
+}
+
+.cs-footer {
+  padding: 0.4rem 0.75rem;
+  text-align: center;
+  font-size: 0.72rem;
+  color: var(--text-light);
+  border-top: 1px solid var(--border);
+}
+
 /* Followup chips */
 .followups {
   margin-top: 0.6rem;
@@ -307,6 +611,15 @@ body {
   font-size: 0.78rem;
   color: var(--text-light);
   font-weight: 500;
+}
+
+/* Shown above chips when products are already on screen - signals the
+   chips are an optional refinement, not the primary CTA. */
+.followup-refine-hint {
+  font-size: 0.8rem;
+  color: var(--text);
+  font-weight: 500;
+  margin-bottom: 0.2rem;
 }
 
 .followup-chips {

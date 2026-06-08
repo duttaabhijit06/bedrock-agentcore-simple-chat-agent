@@ -4,7 +4,7 @@
  * Deletes and recreates the index before uploading new vectors.
  *
  * Input:
- *   { dataType: "products" | "customers" }
+ *   { dataType: "products" | "customers" | "interactions" }
  *
  * Output:
  *   { success: boolean, indexName: string }

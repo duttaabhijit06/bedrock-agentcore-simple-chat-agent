@@ -6,7 +6,7 @@
  *
  * Input:
  *   {
- *     dataType: "products" | "customers",
+ *     dataType: "products" | "customers" | "interactions",
  *     preparedPath: "s3://bucket/prepared/job-name/",
  *     uploadMode: "replace" | "upsert" | "append"
  *   }

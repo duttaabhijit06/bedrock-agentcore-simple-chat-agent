@@ -13,6 +13,10 @@
           "type": "string",
           "description": "Optional session ID to maintain conversation context across multiple messages"
         },
+        "userId": {
+          "type": "string",
+          "description": "Optional customer ID. When set, the runtime loads the customer profile and last 10 interactions and injects them into the system prompt."
+        },
         "conversationHistory": {
           "type": "array",
           "description": "Previous messages in the conversation for context",
@@ -39,6 +43,51 @@
           "type": "string",
           "description": "The assistant's response"
         }
+      }
+    }
+  },
+  {
+    "name": "list_customers",
+    "description": "List customers from the customer profile index for the UI's customer-selector type-ahead. Read-only call; does not invoke the AgentCore runtime.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "Must be the literal string 'list_customers' (used by the Lambda to dispatch this call instead of the chat path). Note: the gateway schema validator rejects 'enum', so the value constraint is enforced at the Lambda layer, not by the schema."
+        },
+        "limit": {
+          "type": "number",
+          "description": "Maximum customers to return per call (max 500, default 500)"
+        },
+        "nextToken": {
+          "type": "string",
+          "description": "Pagination token from a previous call's response"
+        }
+      },
+      "required": ["action"]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "customers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "userId": { "type": "string" },
+              "customerType": { "type": "string" },
+              "customerSegment": { "type": "string" },
+              "region": { "type": "string" },
+              "state": { "type": "string" },
+              "preferredTheme": { "type": "string" },
+              "priceAffinity": { "type": "string" },
+              "lifetimeSpend": { "type": "string" }
+            }
+          }
+        },
+        "nextToken": { "type": "string" },
+        "totalReturned": { "type": "number" }
       }
     }
   }

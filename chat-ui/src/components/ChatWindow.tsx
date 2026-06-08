@@ -1,60 +1,43 @@
 import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import { signRequest, getCredentials, setCredentials, clearCredentials } from "../lib/sigv4";
+import {
+  ChatResponse,
+  ChatResponseType,
+  FollowupQuestion,
+  ProductCard,
+  parseEnvelope,
+} from "../types/response-envelope";
+import { CustomerSelector, Customer } from "./CustomerSelector";
 
-interface FollowupOption {
-  label: string;
-  value: string;
-}
+const SELECTED_CUSTOMER_KEY = "chat_selected_customer";
 
-interface FollowupQuestion {
-  id: string;
-  label: string;
-  options: FollowupOption[];
-}
-
-interface Followups {
-  questions: FollowupQuestion[];
+function loadSelectedCustomer(): Customer | null {
+  try {
+    const raw = sessionStorage.getItem(SELECTED_CUSTOMER_KEY);
+    return raw ? (JSON.parse(raw) as Customer) : null;
+  } catch {
+    return null;
+  }
 }
 
 interface Message {
   id: string;
   role: "user" | "assistant" | "system";
+  /** Plain text / markdown shown in the bubble. */
   content: string;
+  /** Discriminator for assistant messages. */
+  responseType?: ChatResponseType;
+  /** Product cards (only for type="answer" with tool results). */
+  recommendations?: ProductCard[];
+  /** Chip questions (only for type="followup"). */
+  followups?: FollowupQuestion[];
   timestamp: Date;
-  followups?: Followups;
   metadata?: {
     toolsCalled?: string[];
     memoryStored?: boolean;
     memoryRecalled?: string[];
     responseTimeMs?: number;
-  };
-}
-
-/**
- * Strip out a `<followups>{json}</followups>` block from assistant content
- * and return both the cleaned text and the parsed structure (or null).
- */
-function extractFollowups(content: string): {
-  cleaned: string;
-  followups: Followups | null;
-} {
-  const match = content.match(/<followups>([\s\S]*?)<\/followups>/);
-  if (!match) return { cleaned: content, followups: null };
-
-  let parsed: Followups | null = null;
-  try {
-    const obj = JSON.parse(match[1].trim());
-    if (obj && Array.isArray(obj.questions)) {
-      parsed = obj as Followups;
-    }
-  } catch {
-    // Malformed JSON - treat as no followups, leave content as-is for transparency
-  }
-
-  return {
-    cleaned: parsed ? content.replace(match[0], "").trim() : content,
-    followups: parsed,
   };
 }
 
@@ -97,6 +80,31 @@ export function ChatWindow() {
   >({});
   // Track which messages have had their followup chips submitted (hide after submit)
   const [submittedFollowups, setSubmittedFollowups] = useState<Set<string>>(new Set());
+  // Selected customer for personalization. The agent loads this user's
+  // profile and last 10 interactions into the system prompt for every
+  // chat call when set. Persisted in sessionStorage so the choice
+  // survives page reloads within the tab.
+  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(loadSelectedCustomer);
+
+  function handleCustomerChange(c: Customer | null) {
+    setSelectedCustomer(c);
+    if (c) {
+      sessionStorage.setItem(SELECTED_CUSTOMER_KEY, JSON.stringify(c));
+    } else {
+      sessionStorage.removeItem(SELECTED_CUSTOMER_KEY);
+    }
+    // Append a system message announcing the change so the customer can
+    // see in chat history when their identity switched.
+    const systemMessage: Message = {
+      id: `cs-${Date.now()}`,
+      role: "system",
+      content: c
+        ? `Now chatting as **${c.userId}**${c.customerSegment ? ` (${c.customerSegment})` : ""}. Profile and recent interactions will be used to personalize responses.`
+        : "Customer cleared. No personalization context will be used.",
+      timestamp: new Date(),
+    };
+    setMessages((prev) => [...prev, systemMessage]);
+  }
   const [copied, setCopied] = useState(false);
 
   const handleCopyCommand = async () => {
@@ -154,17 +162,23 @@ export function ChatWindow() {
         .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
 
       const mcpUrl = `${GATEWAY_URL}/mcp`;
+      const chatArgs: Record<string, unknown> = {
+        prompt: userMessage.content,
+        sessionId: sessionId,
+        conversationHistory: conversationHistory,
+      };
+      // When a customer is selected in the UI, pass their userId so the
+      // agent loads their profile + last 10 interactions into the prompt.
+      if (selectedCustomer?.userId) {
+        chatArgs.userId = selectedCustomer.userId;
+      }
       const body = JSON.stringify({
         jsonrpc: "2.0",
         id: Date.now().toString(),
         method: "tools/call",
         params: {
           name: "PartySupplyTarget___chat",
-          arguments: {
-            prompt: userMessage.content,
-            sessionId: sessionId,
-            conversationHistory: conversationHistory,
-          },
+          arguments: chatArgs,
         },
       });
 
@@ -191,33 +205,45 @@ export function ChatWindow() {
       const data = await response.json();
       const responseTimeMs = Date.now() - startTime;
 
-      let assistantContent = "";
+      // The Lambda forwards the agent's ChatResponse envelope. We expect
+      // the JSON-RPC response.text to be a Lambda return like:
+      //   { "envelope": { type, message, recommendations?, followups? }, response: "..." }
+      // Older deployments may instead return { "response": "raw string" }.
+      let envelope: ChatResponse | null = null;
+      let rawText = "";
+
       if (data.result?.content) {
         const textContent = data.result.content
           .filter((c: { type: string }) => c.type === "text")
           .map((c: { text: string }) => c.text)
           .join("\n");
 
-        // Try to parse the Lambda response JSON
         try {
           const parsed = JSON.parse(textContent);
-          assistantContent = parsed.response || parsed.output || textContent;
+          // Preferred path: Lambda gave us an envelope key
+          if (parsed.envelope && typeof parsed.envelope === "object") {
+            envelope = parsed.envelope as ChatResponse;
+            rawText = parsed.response || envelope.message;
+          } else {
+            // Legacy path: Lambda returned plain text in `response`. The
+            // agent might still have emitted JSON envelope inside that
+            // string, so try parseEnvelope on it.
+            rawText = parsed.response || parsed.output || textContent;
+            envelope = parseEnvelope(rawText);
+          }
         } catch {
-          assistantContent = textContent;
+          rawText = textContent;
+          envelope = parseEnvelope(textContent);
         }
       } else if (data.error) {
         throw new Error(data.error.message || JSON.stringify(data.error));
       } else {
-        assistantContent = JSON.stringify(data);
+        rawText = JSON.stringify(data);
       }
 
-      // Detect tool usage from response content
-      const toolsCalled: string[] = [];
-      if (assistantContent.includes("product") || assistantContent.includes("catalog")) {
-        toolsCalled.push("search_products");
-      }
-      if (assistantContent.includes("order") || assistantContent.includes("delivery")) {
-        toolsCalled.push("search_orders");
+      // If we couldn't parse an envelope at all, fall back to a plain answer.
+      if (!envelope) {
+        envelope = { type: "answer", message: rawText };
       }
 
       setActivity((prev) => [
@@ -226,18 +252,16 @@ export function ChatWindow() {
         `✅ Response received (${(responseTimeMs / 1000).toFixed(1)}s)`,
       ]);
 
-      // Extract any <followups>...</followups> JSON block - we render it as
-      // chips, not raw text.
-      const { cleaned, followups } = extractFollowups(assistantContent);
-
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: cleaned,
+        content: envelope.message,
+        responseType: envelope.type,
+        recommendations: envelope.recommendations,
+        followups: envelope.followups,
         timestamp: new Date(),
-        followups: followups || undefined,
         metadata: {
-          toolsCalled: toolsCalled.length > 0 ? toolsCalled : undefined,
+          toolsCalled: envelope.meta?.toolsCalled,
           memoryStored: true,
           responseTimeMs,
         },
@@ -284,13 +308,13 @@ export function ChatWindow() {
 
   // Submit selected chips: build a natural-language message and call handleSend
   const submitFollowups = (message: Message) => {
-    if (!message.followups) return;
+    if (!message.followups || message.followups.length === 0) return;
     const sel = chipSelections[message.id] || {};
 
     // Compose a sentence from the selections, e.g.:
-    //   "What's the occasion?: birthday party. What's your budget?: mid-range."
+    //   "What's the occasion? birthday party. What's your budget? mid-range."
     const parts: string[] = [];
-    for (const q of message.followups.questions) {
+    for (const q of message.followups) {
       const values = Array.from(sel[q.id] || []);
       if (values.length > 0) {
         parts.push(`${q.label} ${values.join(", ")}`);
@@ -371,11 +395,33 @@ export function ChatWindow() {
 
   return (
     <div className="chat-window">
+      <div className="chat-toolbar">
+        {selectedCustomer && (
+          <div className="chat-toolbar-context">
+            Chatting as <strong>{selectedCustomer.userId}</strong>
+            {selectedCustomer.customerSegment ? ` · ${selectedCustomer.customerSegment}` : ""}
+            {selectedCustomer.region ? ` · ${selectedCustomer.region}` : ""}
+          </div>
+        )}
+        <div className="chat-toolbar-spacer" />
+        <CustomerSelector selected={selectedCustomer} onChange={handleCustomerChange} />
+      </div>
       <div className="messages">
         {messages.map((msg) => (
-          <div key={msg.id} className={`message message-${msg.role}`}>
+          <div
+            key={msg.id}
+            className={`message message-${msg.role}${
+              msg.responseType === "blocked" ? " message-blocked" : ""
+            }`}
+          >
             <div className="message-avatar">
-              {msg.role === "user" ? "👤" : msg.role === "assistant" ? "🎉" : "⚠️"}
+              {msg.role === "user"
+                ? "👤"
+                : msg.role === "assistant"
+                ? msg.responseType === "blocked"
+                  ? "🚫"
+                  : "🎉"
+                : "⚠️"}
             </div>
             <div className="message-content">
               <div className="message-text">
@@ -385,10 +431,58 @@ export function ChatWindow() {
                   msg.content
                 )}
               </div>
-              {/* Followup chip groups - hidden after submit */}
-              {msg.followups && !submittedFollowups.has(msg.id) && (
+              {/* Product cards (only on type="answer" with tool results) */}
+              {msg.recommendations && msg.recommendations.length > 0 && (
+                <div className="product-cards">
+                  {msg.recommendations.map((p) => (
+                    <a
+                      key={p.id}
+                      href={p.link || "#"}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="product-card"
+                      onClick={(e) => {
+                        if (!p.link) e.preventDefault();
+                      }}
+                    >
+                      {p.image && (
+                        <img
+                          src={p.image}
+                          alt={p.title}
+                          className="product-card-image"
+                          onError={(e) => {
+                            (e.currentTarget as HTMLImageElement).style.display = "none";
+                          }}
+                        />
+                      )}
+                      <div className="product-card-body">
+                        <div className="product-card-title">{p.title}</div>
+                        <div className="product-card-meta">
+                          {p.price && <span className="product-card-price">${p.price}</span>}
+                          {p.theme && <span className="product-card-theme">{p.theme}</span>}
+                          {p.category && (
+                            <span className="product-card-category">{p.category}</span>
+                          )}
+                        </div>
+                        {p.description && (
+                          <div className="product-card-desc">{p.description}</div>
+                        )}
+                      </div>
+                    </a>
+                  ))}
+                </div>
+              )}
+              {/* Followup chip groups - hidden after submit. When products are
+                  also showing, this is optional refinement; otherwise it's the
+                  primary action (bootstrap a search). */}
+              {msg.followups && msg.followups.length > 0 && !submittedFollowups.has(msg.id) && (
                 <div className="followups">
-                  {msg.followups.questions.map((q) => {
+                  {msg.recommendations && msg.recommendations.length > 0 && (
+                    <div className="followup-refine-hint">
+                      Want to narrow it down?
+                    </div>
+                  )}
+                  {msg.followups.map((q) => {
                     const selected = chipSelections[msg.id]?.[q.id] || new Set<string>();
                     return (
                       <div key={q.id} className="followup-group">

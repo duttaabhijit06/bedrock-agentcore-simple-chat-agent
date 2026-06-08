@@ -4,10 +4,15 @@ Glue ETL Job: Deduplication and JSONL Preparation
 Reads CSV from S3, deduplicates by ID, converts to JSONL format for Bedrock Batch.
 
 Arguments:
-  --data_type: products | customers
+  --data_type: products | customers | interactions
   --input_path: s3://bucket/path/to/input.csv
   --output_path: s3://bucket/path/to/output/
   --chunk_size: Records per JSONL file (default: 50000)
+
+Note on interactions: each event row becomes its own vector. The "id" used
+for the vector key is a composite of USER_ID + ITEM_ID + TIMESTAMP since
+the same user can interact with the same item multiple times. Dedup is
+applied on that composite key, not on USER_ID alone.
 """
 
 import sys
@@ -126,11 +131,54 @@ def customer_to_text(row):
     return ". ".join(parts)
 
 
+def interaction_to_text(row):
+    """Convert one interaction event row to embedding text.
+
+    Each row is a single user/item event - we want the embedding to
+    capture the action ("user X viewed item Y at time Z") so the agent
+    can do semantic queries like "what has user X been browsing?" or
+    "show me items recently purchased". Item details aren't included
+    here because the products-index already covers product semantics;
+    interactions just point at items.
+    """
+    user_id = getattr(row, 'USER_ID', None) or getattr(row, 'userId', None) or ''
+    item_id = getattr(row, 'ITEM_ID', None) or getattr(row, 'itemId', None) or ''
+    event_type = getattr(row, 'EVENT_TYPE', None) or getattr(row, 'eventType', None) or 'event'
+    timestamp = getattr(row, 'TIMESTAMP', None) or getattr(row, 'timestamp', None) or ''
+    quantity = getattr(row, 'QUANTITY', None) or getattr(row, 'quantity', None)
+    price = getattr(row, 'PRICE', None) or getattr(row, 'price', None)
+    rec_id = getattr(row, 'RECOMMENDATION_ID', None) or getattr(row, 'recommendationId', None)
+
+    parts = [f"User {user_id} performed {event_type} on item {item_id}"]
+    if timestamp:
+        parts.append(f"at timestamp {timestamp}")
+    if quantity and str(quantity).strip() not in ('', '0'):
+        parts.append(f"quantity {quantity}")
+    if price:
+        parts.append(f"price ${price}")
+    if rec_id and str(rec_id).strip():
+        parts.append(f"via {rec_id}")
+    return ". ".join(parts)
+
+
+def make_interaction_id(row):
+    """Composite key: user/item events aren't unique by user alone, the
+    same user can view the same item many times. The vector store needs
+    a stable per-event key so we hash user+item+timestamp."""
+    user_id = str(getattr(row, 'USER_ID', None) or getattr(row, 'userId', None) or '')
+    item_id = str(getattr(row, 'ITEM_ID', None) or getattr(row, 'itemId', None) or '')
+    timestamp = str(getattr(row, 'TIMESTAMP', None) or getattr(row, 'timestamp', None) or '')
+    return f"{user_id}_{item_id}_{timestamp}"
+
+
 def to_bedrock_jsonl(row, data_type):
     """Convert row to Bedrock Batch JSONL format."""
     if data_type == 'products':
         record_id = getattr(row, 'id', None) or getattr(row, 'ITEM_ID', None) or ''
         text = product_to_text(row)
+    elif data_type == 'interactions':
+        record_id = make_interaction_id(row)
+        text = interaction_to_text(row)
     else:
         record_id = getattr(row, 'userId', None) or getattr(row, 'USER_ID', None) or ''
         text = customer_to_text(row)
@@ -149,15 +197,22 @@ def to_bedrock_jsonl(row, data_type):
 df = spark.read.option("header", "true").option("inferSchema", "true").csv(input_path)
 print(f"Read {df.count()} records")
 
-# Determine ID column
+# Determine dedup key. Products and customers dedup on a single column;
+# interactions are uniquely identified by the (user, item, timestamp) tuple
+# because the same user can interact with the same item many times.
+original_count = df.count()
 if data_type == 'products':
     id_col = 'id' if 'id' in df.columns else 'ITEM_ID'
+    df_dedup = df.dropDuplicates([id_col])
+elif data_type == 'interactions':
+    user_col = 'userId' if 'userId' in df.columns else 'USER_ID'
+    item_col = 'itemId' if 'itemId' in df.columns else 'ITEM_ID'
+    ts_col = 'timestamp' if 'timestamp' in df.columns else 'TIMESTAMP'
+    df_dedup = df.dropDuplicates([user_col, item_col, ts_col])
 else:
     id_col = 'userId' if 'userId' in df.columns else 'USER_ID'
+    df_dedup = df.dropDuplicates([id_col])
 
-# Deduplicate
-original_count = df.count()
-df_dedup = df.dropDuplicates([id_col])
 dedup_count = df_dedup.count()
 print(f"After deduplication: {dedup_count} records ({original_count - dedup_count} duplicates removed)")
 

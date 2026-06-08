@@ -1,14 +1,22 @@
 /**
  * Generate bulk CSV fixtures for batch import testing.
  *
- * Reads the headers from uploads/sample-products.csv and uploads/sample-customers.csv,
- * synthesizes 100K products and 5K customers, and writes:
- *   uploads/products.csv
- *   uploads/customers.csv
+ * Reads the headers from uploads/sample-*.csv, synthesizes 100K products,
+ * 5K customers, and 25K interactions, then writes:
+ *   uploads/products.csv          - bulk products
+ *   uploads/customers.csv         - bulk customers
+ *   uploads/interactions.csv      - bulk interactions referencing the bulk IDs
+ *   uploads/sample-interactions.csv - 500-row sample referencing the sample IDs
+ *
+ * Interactions are coherent with the catalog: each row references real
+ * USER_ID and ITEM_ID values from the customer/product files (bulk
+ * interactions reference bulk IDs, sample interactions reference sample IDs).
+ * That means the agent's query_interactions can be paired with
+ * search_products/lookup_customer for round-trip enrichment.
  *
  * Usage:
  *   npx tsx scripts/generate-bulk-csv.ts
- *   npx tsx scripts/generate-bulk-csv.ts --products 50000 --customers 2000
+ *   npx tsx scripts/generate-bulk-csv.ts --products 50000 --customers 2000 --interactions 10000
  */
 import { readFileSync, writeFileSync, createWriteStream } from "fs";
 
@@ -21,6 +29,8 @@ function getArg(flag: string, fallback: number): number {
 }
 const NUM_PRODUCTS = getArg("--products", 100000);
 const NUM_CUSTOMERS = getArg("--customers", 5000);
+const NUM_INTERACTIONS = getArg("--interactions", 25000);
+const NUM_SAMPLE_INTERACTIONS = getArg("--sample-interactions", 500);
 
 // ─── Read sample headers + rows ──────────────────────────────────────────────
 function parseCsv(path: string): { headers: string[]; rows: string[][] } {
@@ -294,6 +304,120 @@ function generateCustomer(index: number, headers: string[]): string[] {
   return headers.map((h) => m[h] ?? "");
 }
 
+// ─── Interactions ───────────────────────────────────────────────────────────
+//
+// Each row is one user/item event. Distribution mirrors typical e-commerce
+// funnels: ~70% views, ~20% add_to_cart, ~10% purchase. RECOMMENDATION_ID
+// is populated for ~30% of events to simulate "discovered via X" tracking.
+
+const interactionHeaders = [
+  "USER_ID",
+  "ITEM_ID",
+  "TIMESTAMP",
+  "EVENT_TYPE",
+  "EVENT_VALUE",
+  "QUANTITY",
+  "PRICE",
+  "RECOMMENDATION_ID",
+];
+
+const eventTypes = [
+  // Weighted: more views than purchases, like real funnels
+  "view", "view", "view", "view", "view", "view", "view",
+  "add_to_cart", "add_to_cart",
+  "purchase",
+];
+
+const eventValueByType: Record<string, string> = {
+  view: "1.0",
+  add_to_cart: "2.0",
+  purchase: "5.0",
+};
+
+const recommendationSources = [
+  "Recently Viewed",
+  "Frequently Bought Together",
+  "Customers Also Bought",
+  "Trending Now",
+  "Picked For You",
+  "Search Results",
+];
+
+/**
+ * Build a function that generates interaction rows referencing the given
+ * customer and product ID pools. Both pools are arrays of strings; each
+ * row picks one user and one item at random and emits an event for them.
+ *
+ * Timestamps are spread across the past 90 days (epoch seconds) so the
+ * agent has a notion of recency.
+ */
+function makeInteractionGenerator(userIds: string[], itemIds: string[], itemPrices: Record<string, number>) {
+  const now = Math.floor(Date.now() / 1000);
+  const NINETY_DAYS = 90 * 24 * 60 * 60;
+
+  return function generateInteraction(_index: number): string[] {
+    const userId = pick(userIds);
+    const itemId = pick(itemIds);
+    const eventType = pick(eventTypes);
+    const eventValue = eventValueByType[eventType];
+    const quantity = eventType === "view" ? "0" : randInt(1, 3).toString();
+    const price = itemPrices[itemId]?.toFixed(2) ?? randFloat(5, 200).toFixed(2);
+    const timestamp = (now - randInt(0, NINETY_DAYS)).toString();
+    // ~30% of events have a recommendation source, the rest are organic
+    const recommendationId = Math.random() < 0.3 ? pick(recommendationSources) : "";
+
+    return [
+      userId,
+      itemId,
+      timestamp,
+      eventType,
+      eventValue,
+      quantity,
+      price,
+      recommendationId,
+    ];
+  };
+}
+
+// ─── ID + price extraction from generated CSVs ──────────────────────────────
+//
+// After we generate products.csv and customers.csv we read them back to get
+// the ID space the interactions should reference. Reading the CSV instead
+// of recomputing from generator state means interactions stay coherent
+// even if you re-run the generator with different sizes.
+
+interface IdPool {
+  userIds: string[];
+  itemIds: string[];
+  itemPrices: Record<string, number>;
+}
+
+function loadIdPool(productPath: string, customerPath: string): IdPool {
+  const products = parseCsv(productPath);
+  const customers = parseCsv(customerPath);
+
+  const itemIdIdx = products.headers.indexOf("ITEM_ID");
+  const priceIdx = products.headers.indexOf("PRICE");
+  const userIdIdx = customers.headers.indexOf("USER_ID");
+
+  const itemIds: string[] = [];
+  const itemPrices: Record<string, number> = {};
+  for (const row of products.rows) {
+    const id = row[itemIdIdx];
+    if (id) {
+      itemIds.push(id);
+      const price = parseFloat(row[priceIdx]);
+      if (!Number.isNaN(price)) itemPrices[id] = price;
+    }
+  }
+
+  const userIds = customers.rows
+    .map((row) => row[userIdIdx])
+    .filter((v) => Boolean(v));
+
+  return { userIds, itemIds, itemPrices };
+}
+
 // ─── Streamed writes ─────────────────────────────────────────────────────────
 function writeRowsStreamed(
   outPath: string,
@@ -353,8 +477,53 @@ async function main() {
   );
   console.log(`  ✓ Done in ${((Date.now() - t2) / 1000).toFixed(1)}s`);
 
+  // Bulk interactions reference the bulk catalog/customer IDs we just wrote.
+  console.log(`\nGenerating ${NUM_INTERACTIONS.toLocaleString()} interactions → uploads/interactions.csv`);
+  const t3 = Date.now();
+  console.log("  Loading ID pool from generated products + customers...");
+  const bulkPool = loadIdPool("uploads/products.csv", "uploads/customers.csv");
+  console.log(`  Pool: ${bulkPool.userIds.length.toLocaleString()} users × ${bulkPool.itemIds.length.toLocaleString()} items`);
+  const generateBulkInteraction = makeInteractionGenerator(
+    bulkPool.userIds,
+    bulkPool.itemIds,
+    bulkPool.itemPrices
+  );
+  await writeRowsStreamed(
+    "uploads/interactions.csv",
+    interactionHeaders,
+    NUM_INTERACTIONS,
+    generateBulkInteraction,
+    "interactions"
+  );
+  console.log(`  ✓ Done in ${((Date.now() - t3) / 1000).toFixed(1)}s`);
+
+  // Sample interactions reference the small sample CSVs (CUST-1001..1010,
+  // PROD-101..110). These are useful for unit-test-sized smoke tests where
+  // you don't want to push 25K rows through the batch pipeline.
+  console.log(`\nGenerating ${NUM_SAMPLE_INTERACTIONS.toLocaleString()} sample interactions → uploads/sample-interactions.csv`);
+  const t4 = Date.now();
+  const samplePool = loadIdPool("uploads/sample-products.csv", "uploads/sample-customers.csv");
+  console.log(`  Pool: ${samplePool.userIds.length} users × ${samplePool.itemIds.length} items`);
+  const generateSampleInteraction = makeInteractionGenerator(
+    samplePool.userIds,
+    samplePool.itemIds,
+    samplePool.itemPrices
+  );
+  await writeRowsStreamed(
+    "uploads/sample-interactions.csv",
+    interactionHeaders,
+    NUM_SAMPLE_INTERACTIONS,
+    generateSampleInteraction,
+    "sample-interactions"
+  );
+  console.log(`  ✓ Done in ${((Date.now() - t4) / 1000).toFixed(1)}s`);
+
   console.log("\nNext step:");
-  console.log("  ./scripts/batch-import.sh -p uploads/products.csv -c uploads/customers.csv --mode replace");
+  console.log("  ./scripts/batch-import.sh \\");
+  console.log("    -p uploads/products.csv \\");
+  console.log("    -c uploads/customers.csv \\");
+  console.log("    -i uploads/interactions.csv \\");
+  console.log("    --mode replace");
 }
 
 main().catch((err) => {

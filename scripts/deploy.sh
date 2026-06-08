@@ -47,6 +47,7 @@ REGION="${AWS_REGION:-us-west-2}"
 VECTOR_BUCKET_NAME="${VECTOR_BUCKET_NAME:-party-supply-vectors}"
 LAMBDA_NAME="party-supply-gateway-handler"
 LAMBDA_ROLE_NAME="party-supply-lambda-role"
+PROMPTS_TABLE_NAME="${PROMPTS_TABLE_NAME:-party-supply-prompts}"
 ACCOUNT_ID=""
 
 # ─── Flags ───────────────────────────────────────────────────────────────────
@@ -60,6 +61,7 @@ DO_LAMBDA=false
 DO_GATEWAY_TARGET=false
 DO_BATCH_ASYNC=false
 DO_GUARDRAIL=false
+DO_PROMPTS=false
 DO_STATUS=false
 DO_CLEAN=false
 NO_FLAGS=true
@@ -79,6 +81,7 @@ show_help() {
   echo "  --gateway-target   Add Lambda as a target on the gateway"
   echo "  --batch-async      Setup batch import async processing (EventBridge + Step Functions + Lambda)"
   echo "  --guardrail        Configure Bedrock Guardrail for the agent"
+  echo "  --prompts          Upload agent/prompts.md sections to DynamoDB (no agent rebuild)"
   echo "  --status           Show deployment status"
   echo "  --clean            Tear down all deployed resources"
   echo "  --region REGION    AWS region (default: us-west-2)"
@@ -88,6 +91,7 @@ show_help() {
   echo "  ./scripts/deploy.sh --all                       # Full deployment"
   echo "  ./scripts/deploy.sh --seed --upload             # Regenerate and upload data"
   echo "  ./scripts/deploy.sh --lambda --gateway-target   # Deploy Lambda + wire to gateway"
+  echo "  ./scripts/deploy.sh --prompts                   # Update prompts (live in <=60s, no rebuild)"
   echo "  ./scripts/deploy.sh --clean                     # Tear down everything"
 }
 
@@ -102,6 +106,7 @@ while [[ $# -gt 0 ]]; do
     --gateway-target)  DO_GATEWAY_TARGET=true; NO_FLAGS=false; shift ;;
     --batch-async)     DO_BATCH_ASYNC=true; NO_FLAGS=false; shift ;;
     --guardrail)       DO_GUARDRAIL=true; NO_FLAGS=false; shift ;;
+    --prompts)         DO_PROMPTS=true; NO_FLAGS=false; shift ;;
     --status)          DO_STATUS=true; NO_FLAGS=false; shift ;;
     --clean)           DO_CLEAN=true; NO_FLAGS=false; shift ;;
     --region)          REGION="$2"; shift 2 ;;
@@ -227,10 +232,15 @@ step_seed() {
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo "[seed] Generating seed data with Titan Text Embeddings V2..."
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  # Check if all vector files exist (products, orders, customers)
+  # Skip only if ALL four vector files exist (products, orders, customers,
+  # interactions). On older deploys the first three may already be present
+  # but interactions is a newer addition - we still want to regenerate
+  # then. The seed script itself short-circuits per-file inside, so this
+  # re-run is cheap (only the missing interactions get embedded).
   if [ -f "seed-data/products-vectors.json" ] && \
      [ -f "seed-data/orders-vectors.json" ] && \
-     [ -f "seed-data/customers-vectors.json" ]; then
+     [ -f "seed-data/customers-vectors.json" ] && \
+     [ -f "seed-data/interactions-vectors.json" ]; then
     echo "  Seed data exists. Skipping. (Delete seed-data/*.json to regenerate)"
   else
     AWS_REGION="${REGION}" npx --yes tsx scripts/generate-seed-data.ts
@@ -283,8 +293,19 @@ step_vectors() {
     --dimension 1024 --distance-metric "cosine" --data-type "float32" \
     --region "${REGION}" 2>/dev/null || echo "  (already exists)"
 
+  # Interactions index holds embedded user-item events (view, add_to_cart,
+  # purchase). Each row in the customer-supplied interactions CSV becomes
+  # one vector; the agent's query_interactions tool searches it
+  # semantically (e.g., "items recently viewed by user X").
+  echo "  Creating interactions-index..."
+  aws s3vectors create-index \
+    --vector-bucket-name "${VECTOR_BUCKET_NAME}" \
+    --index-name "interactions-index" \
+    --dimension 1024 --distance-metric "cosine" --data-type "float32" \
+    --region "${REGION}" 2>/dev/null || echo "  (already exists)"
+
   echo "  Waiting for indexes to become active..."
-  for idx_name in "products-index" "orders-index" "customers-index"; do
+  for idx_name in "products-index" "orders-index" "customers-index" "interactions-index"; do
     retries=0
     while [ $retries -lt 30 ]; do
       # Try get-index first (faster), fall back to list-indexes (broader CLI support)
@@ -321,19 +342,30 @@ step_upload() {
     echo "  ❌ Seed data not found. Run with --seed first."; exit 1
   fi
 
-  # Check if vectors already have data - skip upload if so
-  EXISTING_DATA=$(aws s3vectors get-vectors --vector-bucket-name "${VECTOR_BUCKET_NAME}" \
-    --index-name "products-index" --keys '["prod-1"]' \
+  # Probe each index independently. Older deploys may have populated
+  # products/orders/customers but not interactions (the latter being a
+  # newer addition); we want to upload missing indexes without re-running
+  # the ones that are already populated. Each probe samples one known
+  # vector key per index - cheap and scoped to that index only.
+  PRODUCTS_HAS_DATA=$(aws s3vectors list-vectors --vector-bucket-name "${VECTOR_BUCKET_NAME}" \
+    --index-name "products-index" --max-results 1 \
+    --region "${REGION}" --query "vectors | length(@)" --output text 2>/dev/null || echo "0")
+  INTERACTIONS_HAS_DATA=$(aws s3vectors list-vectors --vector-bucket-name "${VECTOR_BUCKET_NAME}" \
+    --index-name "interactions-index" --max-results 1 \
     --region "${REGION}" --query "vectors | length(@)" --output text 2>/dev/null || echo "0")
 
-  if [ "$EXISTING_DATA" != "0" ] && [ -n "$EXISTING_DATA" ]; then
-    echo "  Vector indexes already contain data. Skipping upload."
+  if [ "$PRODUCTS_HAS_DATA" != "0" ] && [ "$INTERACTIONS_HAS_DATA" != "0" ]; then
+    echo "  All vector indexes already contain data. Skipping upload."
     echo "  (Use --clean first if you want to re-upload)"
     return 0
   fi
+  if [ "$PRODUCTS_HAS_DATA" != "0" ] && [ "$INTERACTIONS_HAS_DATA" = "0" ]; then
+    echo "  Products/customers already populated; uploading missing indexes only..."
+  fi
 
-  echo "  Uploading product vectors..."
-  node --input-type=module -e "
+  if [ "$PRODUCTS_HAS_DATA" = "0" ]; then
+    echo "  Uploading product vectors..."
+    node --input-type=module -e "
 import { readFileSync } from 'fs';
 import { S3VectorsClient, PutVectorsCommand } from '@aws-sdk/client-s3vectors';
 const client = new S3VectorsClient({ region: '${REGION}' });
@@ -348,6 +380,9 @@ for (let i = 0; i < data.vectors.length; i += 10) {
 }
 console.log('  Products: done');
 "
+  else
+    echo "  Products already populated. Skipping."
+  fi
 
   echo "  Uploading order vectors..."
   node --input-type=module -e "
@@ -387,6 +422,29 @@ console.log('  Customers: done');
   else
     echo "  Skipping customers (no customers-vectors.json found)"
   fi
+
+  # Upload interactions if the seed file exists. Optional because interactions
+  # are a newer addition - older seed-data dirs may not have this file.
+  if [ -f "seed-data/interactions-vectors.json" ]; then
+    echo "  Uploading interaction vectors..."
+    node --input-type=module -e "
+import { readFileSync } from 'fs';
+import { S3VectorsClient, PutVectorsCommand } from '@aws-sdk/client-s3vectors';
+const client = new S3VectorsClient({ region: '${REGION}' });
+const data = JSON.parse(readFileSync('seed-data/interactions-vectors.json', 'utf-8'));
+for (let i = 0; i < data.vectors.length; i += 10) {
+  const batch = data.vectors.slice(i, i + 10);
+  await client.send(new PutVectorsCommand({
+    vectorBucketName: '${VECTOR_BUCKET_NAME}', indexName: 'interactions-index',
+    vectors: batch.map(v => ({ key: v.key, data: { float32: v.vector }, metadata: v.metadata })),
+  }));
+  console.log('    Uploaded interactions batch ' + (Math.floor(i/10) + 1));
+}
+console.log('  Interactions: done');
+"
+  else
+    echo "  Skipping interactions (no interactions-vectors.json found)"
+  fi
   echo ""
 }
 
@@ -405,6 +463,18 @@ step_agent() {
     echo "  Installing CDK dependencies..."
     npm install --prefix agentcore/cdk 2>/dev/null
   fi
+
+  # Verify agent/package-lock.json is in sync with agent/package.json.
+  # CodeBuild runs `npm ci --legacy-peer-deps` inside the container build,
+  # which fails fast if the lock file is missing dependencies. Detect the
+  # mismatch up front rather than waiting 3-5 minutes for CodeBuild to fail.
+  echo "  Checking agent dependency lock file..."
+  if ! (cd agent && npm ci --dry-run --legacy-peer-deps >/dev/null 2>&1); then
+    echo "  agent/package-lock.json is out of sync with package.json. Regenerating..."
+    (cd agent && npm install >/dev/null 2>&1)
+    echo "  Lock file updated."
+  fi
+
   echo "  Validating configuration..."
   npx agentcore validate
   echo "  Deploying (container build via CodeBuild, ~3-5 min)..."
@@ -462,6 +532,19 @@ step_agent() {
           \"Resource\": \"arn:aws:bedrock:${REGION}:${ACCOUNT_ID}:guardrail/*\"
         }]
       }" 2>/dev/null && echo "  Guardrail permissions added." || echo "  (could not update Guardrail permissions)"
+
+    # Add Prompts table read access. The runtime polls this table every
+    # 60s for prompt updates so customers can edit agent/prompts.md and
+    # see changes live without rebuilding the agent.
+    aws iam put-role-policy --role-name "$RUNTIME_ROLE" --policy-name "PromptsTableAccess" \
+      --policy-document "{
+        \"Version\": \"2012-10-17\",
+        \"Statement\": [{
+          \"Effect\": \"Allow\",
+          \"Action\": [\"dynamodb:Scan\", \"dynamodb:GetItem\", \"dynamodb:DescribeTable\"],
+          \"Resource\": \"arn:aws:dynamodb:${REGION}:${ACCOUNT_ID}:table/${PROMPTS_TABLE_NAME}\"
+        }]
+      }" 2>/dev/null && echo "  Prompts table permissions added." || echo "  (could not update Prompts table permissions)"
   fi
 
   echo ""
@@ -575,6 +658,16 @@ step_lambda() {
     --policy-name "InvokeAgentCoreRuntime" \
     --policy-document "${RUNTIME_POLICY}" 2>/dev/null || true
 
+  # Policy to read customer metadata for the list_customers tool. The
+  # Lambda's list_customers handler calls ListVectors against the
+  # customers index directly (no runtime hop) so the UI's selector can
+  # populate without paying a runtime invocation cost.
+  CUSTOMERS_LIST_POLICY="{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"s3vectors:ListVectors\",\"Resource\":\"arn:aws:s3vectors:${REGION}:${ACCOUNT_ID}:bucket/${VECTOR_BUCKET_NAME}*\"}]}"
+  aws iam put-role-policy \
+    --role-name "${LAMBDA_ROLE_NAME}" \
+    --policy-name "ListCustomersFromS3Vectors" \
+    --policy-document "${CUSTOMERS_LIST_POLICY}" 2>/dev/null || true
+
   ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${LAMBDA_ROLE_NAME}"
   echo "  Role ARN: ${ROLE_ARN}"
   echo "  Waiting for IAM role propagation (10s)..."
@@ -608,7 +701,7 @@ step_lambda() {
     sleep 5
     aws lambda update-function-configuration \
       --function-name "${LAMBDA_NAME}" \
-      --environment "Variables={AGENT_REGION=${REGION},RUNTIME_ARN=${RUNTIME_ARN}}" \
+      --environment "Variables={AGENT_REGION=${REGION},RUNTIME_ARN=${RUNTIME_ARN},VECTOR_BUCKET_NAME=${VECTOR_BUCKET_NAME}}" \
       --timeout 120 \
       --region "${REGION}" > /dev/null 2>&1 || true
   else
@@ -620,7 +713,7 @@ step_lambda() {
       --zip-file "fileb://${LAMBDA_ZIP}" \
       --timeout 120 \
       --memory-size 256 \
-      --environment "Variables={AGENT_REGION=${REGION},RUNTIME_ARN=${RUNTIME_ARN}}" \
+      --environment "Variables={AGENT_REGION=${REGION},RUNTIME_ARN=${RUNTIME_ARN},VECTOR_BUCKET_NAME=${VECTOR_BUCKET_NAME}}" \
       --region "${REGION}" > /dev/null
   fi
 
@@ -681,6 +774,42 @@ step_lambda() {
   fi
 
   echo "  Lambda deployed."
+
+  # ─── Warm-up schedule (EventBridge -> Lambda every 5 min) ───────────────
+  # Cold starts on this Lambda are ~1-2s. EventBridge pings every 5 minutes
+  # with `{"warmup": true}` so the container stays hot for users. The
+  # Lambda short-circuits warmup events without invoking the runtime, so
+  # the only cost is one Lambda invoke per 5 min (~$0.0002/month).
+  echo "  Creating warm-up schedule..."
+  WARMUP_RULE_NAME="${LAMBDA_NAME}-warmup"
+  WARMUP_RULE_ARN="arn:aws:events:${REGION}:${ACCOUNT_ID}:rule/${WARMUP_RULE_NAME}"
+
+  aws events put-rule \
+    --name "${WARMUP_RULE_NAME}" \
+    --schedule-expression "rate(5 minutes)" \
+    --state ENABLED \
+    --description "Warm up the Party Supply gateway Lambda to avoid cold starts" \
+    --region "${REGION}" >/dev/null
+
+  # Allow EventBridge to invoke the Lambda. add-permission is idempotent
+  # only by Sid - swallow ResourceConflictException on re-runs.
+  aws lambda add-permission \
+    --function-name "${LAMBDA_NAME}" \
+    --statement-id "AllowEventBridgeWarmup" \
+    --action "lambda:InvokeFunction" \
+    --principal "events.amazonaws.com" \
+    --source-arn "${WARMUP_RULE_ARN}" \
+    --region "${REGION}" 2>/dev/null \
+    && echo "  EventBridge invoke permission added." \
+    || echo "  (warmup permission already exists)"
+
+  # Wire the rule to the Lambda. put-targets is idempotent.
+  aws events put-targets \
+    --rule "${WARMUP_RULE_NAME}" \
+    --targets "Id=1,Arn=${LAMBDA_ARN},Input='{\"warmup\":true}'" \
+    --region "${REGION}" >/dev/null
+
+  echo "  Warm-up schedule active (every 5 min)."
   echo ""
 }
 
@@ -700,7 +829,10 @@ step_gateway_target() {
   fi
   echo "  Gateway ID: ${GATEWAY_ID}"
 
-  # Check if target already exists
+  # Check if target already exists. If it does, delete and recreate so
+  # any changes to lambda/tools.json (new tools, updated schemas) actually
+  # reach the gateway. Pure idempotency-by-skip would silently leave stale
+  # tool definitions registered after a tools.json edit.
   EXISTING=$(aws bedrock-agentcore-control list-gateway-targets \
     --gateway-identifier "${GATEWAY_ID}" \
     --region "${REGION}" \
@@ -708,8 +840,18 @@ step_gateway_target() {
     --output text 2>/dev/null || echo "None")
 
   if [ "$EXISTING" != "None" ] && [ -n "$EXISTING" ]; then
-    echo "  Target 'PartySupplyTarget' already exists. Skipping."
-  else
+    echo "  Target 'PartySupplyTarget' exists (id=${EXISTING}). Deleting to refresh tool schema..."
+    aws bedrock-agentcore-control delete-gateway-target \
+      --gateway-identifier "${GATEWAY_ID}" \
+      --target-id "${EXISTING}" \
+      --region "${REGION}" >/dev/null
+    # Deletion is async; wait for it to clear before recreating.
+    echo "  Waiting for target deletion to propagate (15s)..."
+    sleep 15
+  fi
+
+  # Always recreate the target so tools.json changes land.
+  if true; then
     # Ensure gateway role has permission to invoke Lambda before creating target
     echo "  Adding Lambda invoke permission to gateway role..."
     GATEWAY_ROLE_ARN=$(aws bedrock-agentcore-control get-gateway \
@@ -754,6 +896,127 @@ step_gateway_target() {
 
     echo "  Target created."
   fi
+  echo ""
+}
+
+# ─── Step: Upload Prompts to DynamoDB ────────────────────────────────────────
+#
+# Reads agent/prompts.md, splits it on `<!-- @section: NAME -->` markers,
+# and writes each section as a separate item in the prompts table. The
+# runtime polls the table every 60s, so updates go live within a minute
+# without rebuilding the agent container.
+#
+# This step is idempotent: it creates the table if missing, then upserts
+# each section. Customers can re-run it freely after editing prompts.md.
+
+step_prompts() {
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "[prompts] Uploading agent/prompts.md sections to DynamoDB..."
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  if [ ! -f "agent/prompts.md" ]; then
+    echo "  ❌ agent/prompts.md not found. Cannot upload prompts."
+    exit 1
+  fi
+
+  # Ensure root deps are installed - the inline node script below pulls
+  # @aws-sdk/client-dynamodb and @aws-sdk/lib-dynamodb from ./node_modules.
+  # If a customer pulled new code without re-running npm install, the
+  # node call below would fail with ERR_MODULE_NOT_FOUND.
+  if [ ! -d "node_modules/@aws-sdk/client-dynamodb" ]; then
+    echo "  Installing missing DynamoDB SDK dependencies..."
+    npm install >/dev/null 2>&1
+  fi
+
+  # Create table if missing. PAY_PER_REQUEST avoids capacity planning for
+  # an item count this small (one item per section, ~10 max).
+  echo "  Ensuring table exists: ${PROMPTS_TABLE_NAME}"
+  if ! aws dynamodb describe-table --table-name "${PROMPTS_TABLE_NAME}" --region "${REGION}" >/dev/null 2>&1; then
+    aws dynamodb create-table \
+      --table-name "${PROMPTS_TABLE_NAME}" \
+      --attribute-definitions AttributeName=section,AttributeType=S \
+      --key-schema AttributeName=section,KeyType=HASH \
+      --billing-mode PAY_PER_REQUEST \
+      --tags Key=Project,Value=PartySupplyChatAgent \
+      --region "${REGION}" >/dev/null
+    echo "  Waiting for table ACTIVE..."
+    aws dynamodb wait table-exists --table-name "${PROMPTS_TABLE_NAME}" --region "${REGION}"
+    echo "  Table created."
+  else
+    echo "  Table already exists."
+  fi
+
+  # Parse and upload via Node so we get robust string handling without
+  # bash quoting headaches (prompt content has quotes, newlines, JSON, etc.).
+  echo "  Parsing prompts.md and uploading sections..."
+  AWS_REGION="${REGION}" PROMPTS_TABLE="${PROMPTS_TABLE_NAME}" PROMPTS_FILE="agent/prompts.md" \
+    node --input-type=module -e "
+import { readFileSync } from 'fs';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
+
+const region = process.env.AWS_REGION;
+const table = process.env.PROMPTS_TABLE;
+const path = process.env.PROMPTS_FILE;
+
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region }));
+
+const raw = readFileSync(path, 'utf-8');
+const re = /<!--\s*@section:\s*([A-Z_]+)\s*-->/g;
+
+// Find all marker positions, then slice between them.
+const markers = [];
+let m;
+while ((m = re.exec(raw)) !== null) {
+  markers.push({ name: m[1], start: m.index, end: m.index + m[0].length });
+}
+
+if (markers.length === 0) {
+  console.error('  ❌ No <!-- @section: NAME --> markers found in ' + path);
+  process.exit(1);
+}
+
+const version = new Date().toISOString();
+let count = 0;
+
+for (let i = 0; i < markers.length; i++) {
+  const marker = markers[i];
+  const next = markers[i + 1];
+  const content = raw.slice(marker.end, next ? next.start : raw.length).trim();
+  if (!content) continue;
+
+  await ddb.send(new PutCommand({
+    TableName: table,
+    Item: {
+      section: marker.name,
+      template: content,
+      version,
+      uploadedFrom: path,
+      uploadedAt: Date.now(),
+    },
+  }));
+  console.log('    ✓ ' + marker.name + ' (' + content.length + ' chars)');
+  count++;
+}
+
+// Write a sentinel row that the runtime watches for cache invalidation.
+// When the prompt loader sees the cacheBust value change between polls,
+// it clears the catalog-facets cache too, so newly imported themes /
+// occasions / categories surface in chip suggestions without a redeploy.
+await ddb.send(new PutCommand({
+  TableName: table,
+  Item: {
+    section: '_meta',
+    cacheBust: version,
+    uploadedAt: Date.now(),
+  },
+}));
+console.log('    ✓ _meta sentinel (cacheBust: ' + version + ')');
+
+console.log('  Uploaded ' + count + ' section(s). Version: ' + version);
+console.log('  Runtime will pick up changes within 60 seconds (cache TTL).');
+console.log('  Catalog facets will refresh too (theme/occasion/category chips).');
+"
   echo ""
 }
 
@@ -829,6 +1092,7 @@ step_clean() {
   # Delete Lambda role
   echo "  Deleting Lambda role..."
   aws iam delete-role-policy --role-name "${LAMBDA_ROLE_NAME}" --policy-name "InvokeAgentCoreRuntime" 2>/dev/null || true
+  aws iam delete-role-policy --role-name "${LAMBDA_ROLE_NAME}" --policy-name "ListCustomersFromS3Vectors" 2>/dev/null || true
   aws iam detach-role-policy --role-name "${LAMBDA_ROLE_NAME}" --policy-arn "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole" 2>/dev/null || true
   aws iam delete-role --role-name "${LAMBDA_ROLE_NAME}" 2>/dev/null || echo "  (not found)"
 
@@ -842,6 +1106,8 @@ step_clean() {
   echo "  Deleting S3 Vectors..."
   aws s3vectors delete-index --vector-bucket-name "${VECTOR_BUCKET_NAME}" --index-name "products-index" --region "${REGION}" 2>/dev/null || true
   aws s3vectors delete-index --vector-bucket-name "${VECTOR_BUCKET_NAME}" --index-name "orders-index" --region "${REGION}" 2>/dev/null || true
+  aws s3vectors delete-index --vector-bucket-name "${VECTOR_BUCKET_NAME}" --index-name "customers-index" --region "${REGION}" 2>/dev/null || true
+  aws s3vectors delete-index --vector-bucket-name "${VECTOR_BUCKET_NAME}" --index-name "interactions-index" --region "${REGION}" 2>/dev/null || true
   aws s3vectors delete-vector-bucket --vector-bucket-name "${VECTOR_BUCKET_NAME}" --region "${REGION}" 2>/dev/null || true
 
   # Clean local artifacts
@@ -944,6 +1210,13 @@ fi
 # Guardrail must be deployed BEFORE agent so env vars are set in agentcore.json
 if [ "$DO_ALL" = true ] || [ "$DO_GUARDRAIL" = true ]; then
   step_guardrail
+fi
+
+# Prompts upload runs before agent so a fresh deploy has a populated
+# table by the time the runtime starts polling. Standalone --prompts
+# still works (no agent rebuild needed - changes go live in <=60s).
+if [ "$DO_ALL" = true ] || [ "$DO_PROMPTS" = true ] || [ "$DO_AGENT" = true ]; then
+  step_prompts
 fi
 
 if [ "$DO_ALL" = true ] || [ "$DO_AGENT" = true ]; then

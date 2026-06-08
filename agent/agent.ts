@@ -22,6 +22,9 @@ import {
   ragSearch,
   searchProducts,
   searchOrders,
+  searchInteractions,
+  getRecentInteractionsByUser,
+  formatInteractionHistory,
   getCustomerProfile,
   formatCustomerProfile,
   CustomerProfile,
@@ -35,6 +38,33 @@ import {
   storeConversationEvent,
   retrieveMemories,
 } from "./tools/memory.js";
+import {
+  ChatResponse,
+  ProductCard,
+  searchResultToCard,
+} from "./response-envelope.js";
+import {
+  CatalogFacets,
+  getCatalogFacets,
+} from "./tools/catalog-facets.js";
+import {
+  renderBasePrompt,
+  renderProfileBlock,
+} from "./prompt-loader.js";
+
+// ─── Per-request tool result accumulator ───────────────────────────────────
+//
+// Recommendation tools push their authoritative SearchResult[] here so the
+// envelope can carry structured product data even if Claude's prose drifts
+// from what the tool actually returned (no hallucinated prices/links).
+// Reset at the start of each /invocations call.
+const toolCallLog: Array<{ tool: string; results: ProductCard[] }> = [];
+function resetToolLog() {
+  toolCallLog.length = 0;
+}
+function recordTool(tool: string, results: Array<{ id: string; score: number; metadata: Record<string, string> }>) {
+  toolCallLog.push({ tool, results: results.map(searchResultToCard) });
+}
 
 // ─── RAG Tools ──────────────────────────────────────────────────────────────
 
@@ -58,6 +88,7 @@ const searchProductsTool = tool({
     if (results.length === 0) {
       return "No products found matching your query.";
     }
+    recordTool("search_products", results);
     return JSON.stringify(results, null, 2);
   },
 });
@@ -81,6 +112,36 @@ const searchOrdersTool = tool({
     const results = await searchOrders(input.query, input.maxResults || 5);
     if (results.length === 0) {
       return "No orders found matching your query.";
+    }
+    return JSON.stringify(results, null, 2);
+  },
+});
+
+const queryInteractionsTool = tool({
+  name: "query_interactions",
+  description:
+    "Search the user-item interaction log (views, add-to-cart, purchases) by semantic query. " +
+    "Use this for behavioral questions like 'what has user X been browsing recently', " +
+    "'which items did user Y add to cart', or 'show me purchase events for item Z'. " +
+    "Each result is one event with userId, itemId, eventType, timestamp, quantity, price. " +
+    "If you need product details for the items returned, follow up with search_products. " +
+    "If the customer is asking about THEIR own activity, prefer this over search_orders - " +
+    "interactions cover all event types (view/cart/purchase), orders only cover completed purchases.",
+  inputSchema: z.object({
+    query: z
+      .string()
+      .describe(
+        "Semantic query (e.g., 'recent views by user 4503601698855094', 'add to cart events', 'purchases of item 14512445')"
+      ),
+    maxResults: z
+      .number()
+      .optional()
+      .describe("Maximum number of events to return (default: 10)"),
+  }),
+  callback: async (input) => {
+    const results = await searchInteractions(input.query, input.maxResults || 10);
+    if (results.length === 0) {
+      return "No interaction events found matching your query.";
     }
     return JSON.stringify(results, null, 2);
   },
@@ -221,6 +282,7 @@ const recommendProductsTool = tool({
     const results = await recommendProducts(criteria, customerId, {
       topK: maxResults || 5,
     });
+    recordTool("recommend_products", results);
     return formatRecommendations(results);
   },
 });
@@ -241,6 +303,7 @@ const personalizedSearchTool = tool({
     const results = await personalizedSearch(input.query, input.customerId, {
       topK: input.maxResults || 5,
     });
+    recordTool("personalized_search", results);
     return formatRecommendations(results);
   },
 });
@@ -264,6 +327,8 @@ const recommendForCustomerTool = tool({
     if (!result.profile) {
       return `No profile found for customer ID: ${input.customerId}. Cannot generate personalized recommendations.`;
     }
+
+    recordTool("recommend_for_customer", result.recommendations);
 
     const parts: string[] = [];
     parts.push("## Customer Profile (basis for recommendations)");
@@ -296,104 +361,90 @@ const recallMemoryTool = tool({
 });
 
 // ─── System Prompt Builder ──────────────────────────────────────────────────
-
-const BASE_SYSTEM_PROMPT = `You are a helpful party supply customer service agent with long-term memory. You assist customers with:
-
-1. **Product Discovery** - Help customers find the right party supplies for their events
-2. **Order Inquiries** - Look up order status, delivery information, and order history
-3. **Customer Account** - Look up customer profiles, preferences, and purchase history
-4. **Recommendations** - Suggest products based on themes, budgets, and event types
-5. **Personalization** - Remember customer preferences across conversations
-
-Guidelines:
-- Always be friendly, enthusiastic, and helpful
-- Use recall_customer_context at the start of conversations to check for returning customers
-- Use lookup_customer when a customer asks about their account, preferences, or order history by ID
-- If a customer asks about an order, search orders first
-- Provide specific product details (price, description) when available
-- If you cannot find what the customer is looking for, suggest alternatives
-- Format responses clearly with product names, prices, and key details
-- Remember customer preferences (favorite themes, colors, event types) for future interactions
-
-Tool selection for product queries:
-- **recommend_products**: when the customer describes an event with specific criteria (theme, occasion, budget, guest count). Filters out-of-stock and re-ranks by profile.
-- **personalized_search**: when the customer types a free-text search AND you have their customerId. Biases ranking toward their stored preferences.
-- **recommend_for_customer**: when a known customer asks "what should I buy?" without specifying an event. Uses only their profile.
-- **search_products**: anonymous customers with simple keyword searches.
-
-Recommendation flow (follow this order):
-
-1. **Always check memory first** for known recommendations. Call \`recall_customer_context\` with a relevant query (e.g., "party preferences", "preferred themes", "budget") before asking the customer anything. If the customer has a known userId, also call \`lookup_customer\` to fetch their stored profile (preferred theme, occasion, price affinity, segment).
-
-2. **Use what you know to fill in gaps.** If memory or the profile already tells you the customer's typical occasion, theme, or budget, treat those as defaults - don't re-ask for things you already know.
-
-3. **If criteria are still missing, ask follow-ups via the chip block** (see format below). Pick the 3 most useful questions you don't already have answers to. Never ask more than 5 questions in one turn, and don't ask the customer to repeat anything you already learned from memory.
-
-4. **Once you have enough context, call \`recommend_products\` (or \`recommend_for_customer\` if the user is known and didn't specify an event).** Don't ever call \`recommend_products\` with empty filters - if you'd be passing nothing useful, ask follow-ups instead.
-
-Follow-up chip format (only used in step 3):
-
-\`\`\`
-<followups>
-{"questions": [
-  {"id": "occasion", "label": "What's the occasion?", "options": [
-    {"label": "🎂 Birthday", "value": "birthday party"},
-    {"label": "💍 Wedding", "value": "wedding"},
-    {"label": "👶 Baby Shower", "value": "baby shower"}
-  ]},
-  {"id": "budget", "label": "What's your budget?", "options": [
-    {"label": "Under $50", "value": "budget-friendly"},
-    {"label": "$50-$200", "value": "mid-range"},
-    {"label": "Premium", "value": "premium"}
-  ]}
-]}
-</followups>
-\`\`\`
-
-Rules for follow-up blocks:
-- **CRITICAL**: ANY follow-up question to refine recommendations MUST be inside a <followups> block. NEVER write follow-up questions as a numbered list, bullet list, or plain prose. The UI parses <followups> into clickable chips - questions written as text won't render as chips and will look like the agent ignored its own instructions.
-- This applies even when you've already returned a partial recommendation list and want to refine it. Examples:
-  - WRONG: "Want more tailored recommendations? Just tell me: 1. Who's the birthday for? 2. Theme? 3. Budget?"
-  - RIGHT: "Want more tailored picks? <followups>{...JSON with the same 3 questions...}</followups>"
-- Pick the 3-5 *most informative* questions; never exceed 5 per turn.
-- Skip any question you can answer from memory or the customer's profile.
-- 3-5 options per question is ideal.
-- Use emoji prefixes for visual scanning (e.g., 🎂, 💍, 👶, 🎃, 🏖️).
-- The "value" field is what gets sent back to you, so phrase it as you'd want to receive it (e.g., "birthday party for kids" not just "birthday").
-- Place the JSON between literal \`<followups>\` and \`</followups>\` tags. The UI strips it before rendering.
-- Above the block, write a short prompt like "Tell me a bit more so I can recommend the right items:" so users see context before the chips.
-- One <followups> block per turn, not multiple.
-
-When showing partial recommendations and refining:
-- It is fine (and encouraged) to show a few products THEN ask follow-ups in the same turn.
-- The follow-ups still go in a <followups> block - never as plain text.
-- Order: brief intro -> product list -> short refining prompt -> <followups> block.`;
+//
+// Prompt templates live in agent/prompts.md and are uploaded to DynamoDB
+// by `./scripts/deploy.sh --prompts`. The runtime calls the loader which
+// caches DDB reads for 60s, so prompt edits go live within a minute
+// without rebuilding the agent. See agent/prompt-loader.ts for the
+// caching/fallback behavior.
 
 /**
- * Build system prompt with optional customer profile context
+ * Build the system prompt. Catalog facets (themes/occasions/categories
+ * actually present in S3 Vectors) are embedded so chip suggestions
+ * mirror the real product catalog rather than hardcoded examples.
  */
-function buildSystemPrompt(customerProfile: CustomerProfile | null): string {
-  if (!customerProfile) {
-    return BASE_SYSTEM_PROMPT;
+async function buildBasePrompt(facets: CatalogFacets): Promise<string> {
+  // Format facet lists for inline use in the prompt. Cap at the cache's
+  // top-N to keep the prompt short.
+  const themesList = facets.themes.slice(0, 8).join(", ") || "Elegant, Tropical, Rustic";
+  const occasionsList = facets.occasions.slice(0, 8).join(", ") || "Birthday, Wedding, Baby Shower";
+  const categoriesList = facets.categories.slice(0, 6).join(", ") || "Balloons, Tableware, Decorations";
+
+  return renderBasePrompt({
+    THEMES: themesList,
+    OCCASIONS: occasionsList,
+    CATEGORIES: categoriesList,
+  });
+}
+
+// Inline prompt body has moved to agent/prompts.md (uploaded to DynamoDB
+// by `./scripts/deploy.sh --prompts`). The full historical prompt is
+// available in git history if you need to reference it.
+
+/**
+ * Build the per-customer tips list. Each non-empty rule becomes a line
+ * that gets injected into the PROFILE_TIPS placeholder of the
+ * PROFILE_BLOCK template (see agent/prompts.md).
+ */
+function buildProfileTips(profile: CustomerProfile): string {
+  const tips: string[] = [];
+  if (profile.preferredTheme) {
+    tips.push(`- This customer prefers "${profile.preferredTheme}" themed items - prioritize these in recommendations`);
   }
+  if (profile.preferredCategoryL1) {
+    tips.push(`- They frequently shop in "${profile.preferredCategoryL1}" - suggest related products`);
+  }
+  if (profile.priceAffinity === "HIGH") {
+    tips.push("- This is a premium customer - feel free to suggest higher-end options");
+  }
+  if (profile.priceAffinity === "BULK") {
+    tips.push("- This is a bulk/business customer - emphasize quantity discounts and bulk options");
+  }
+  if (profile.daysSinceLastOrder && profile.daysSinceLastOrder > 90) {
+    tips.push(`- It's been ${profile.daysSinceLastOrder} days since their last order - consider a welcome-back message`);
+  }
+  if (profile.lifetimeOrderCount && profile.lifetimeOrderCount > 10) {
+    tips.push("- This is a loyal customer - thank them for their continued business");
+  }
+  return tips.join("\n");
+}
 
-  const profileContext = formatCustomerProfile(customerProfile);
+/**
+ * Build system prompt with catalog facets and optional customer profile.
+ * Catalog facets are always required; profile is optional. When a
+ * customerProfile is provided we also pass through formatted recent
+ * interaction history so the agent has behavioral context up front
+ * (rather than needing to call query_interactions to discover it).
+ *
+ * Templates come from DynamoDB via the prompt-loader.
+ */
+async function buildSystemPrompt(
+  facets: CatalogFacets,
+  customerProfile: CustomerProfile | null,
+  interactionHistory: string
+): Promise<string> {
+  const base = await buildBasePrompt(facets);
+  if (!customerProfile) return base;
 
-  return `${BASE_SYSTEM_PROMPT}
+  const profileBlock = await renderProfileBlock({
+    PROFILE_CONTEXT: formatCustomerProfile(customerProfile),
+    PROFILE_TIPS: buildProfileTips(customerProfile),
+    INTERACTION_HISTORY: interactionHistory,
+  });
 
-## Current Customer Profile
-
-The following customer profile was loaded from the customer database. Use this information to personalize your recommendations:
-
-${profileContext}
-
-**Personalization Tips:**
-${customerProfile.preferredTheme ? `- This customer prefers "${customerProfile.preferredTheme}" themed items - prioritize these in recommendations` : ""}
-${customerProfile.preferredCategoryL1 ? `- They frequently shop in "${customerProfile.preferredCategoryL1}" - suggest related products` : ""}
-${customerProfile.priceAffinity === "HIGH" ? "- This is a premium customer - feel free to suggest higher-end options" : ""}
-${customerProfile.priceAffinity === "BULK" ? "- This is a bulk/business customer - emphasize quantity discounts and bulk options" : ""}
-${customerProfile.daysSinceLastOrder && customerProfile.daysSinceLastOrder > 90 ? `- It's been ${customerProfile.daysSinceLastOrder} days since their last order - consider a welcome-back message` : ""}
-${customerProfile.lifetimeOrderCount && customerProfile.lifetimeOrderCount > 10 ? "- This is a loyal customer - thank them for their continued business" : ""}`;
+  // PROFILE_BLOCK is optional in prompts.md; if absent we just return the
+  // base prompt without the personalization layer.
+  return profileBlock ? `${base}\n${profileBlock}` : base;
 }
 
 // ─── Agent Setup ────────────────────────────────────────────────────────────
@@ -456,6 +507,7 @@ function createAgentWithHistory(
       recommendProductsTool,
       personalizedSearchTool,
       recommendForCustomerTool,
+      queryInteractionsTool,
       recallMemoryTool,
     ],
     systemPrompt,
@@ -501,25 +553,43 @@ const app = new BedrockAgentCoreApp({
       );
       console.log(`  Conversation history: ${conversationHistory.length} messages`);
 
-      // Attempt to load customer profile if userId is provided
-      // This is optional and gracefully degrades if not available
-      let customerProfile: CustomerProfile | null = null;
+      // Load catalog facets, customer profile, and recent interactions in
+      // parallel. First-call latency for facets is ~500ms (one-time per
+      // container); profile and interactions are ~300-500ms each. Running
+      // them concurrently keeps total cold-path overhead under ~600ms.
+      const [facets, customerProfile, recentInteractions] = await Promise.all([
+        getCatalogFacets(),
+        userId
+          ? getCustomerProfile(userId).catch((error) => {
+              console.warn(`  Failed to load customer profile for ${userId}:`, error);
+              return null;
+            })
+          : Promise.resolve(null),
+        userId
+          ? getRecentInteractionsByUser(userId, 10).catch((error) => {
+              console.warn(`  Failed to load interactions for ${userId}:`, error);
+              return [];
+            })
+          : Promise.resolve([]),
+      ]);
+
       if (userId) {
-        try {
-          customerProfile = await getCustomerProfile(userId);
-          if (customerProfile) {
-            console.log(`  Loaded customer profile for ${userId}`);
-          } else {
-            console.log(`  No customer profile found for ${userId} (continuing without)`);
-          }
-        } catch (error) {
-          console.warn(`  Failed to load customer profile for ${userId}:`, error);
-          // Continue without profile - graceful degradation
-        }
+        console.log(
+          customerProfile
+            ? `  Loaded customer profile for ${userId} + ${recentInteractions.length} recent interactions`
+            : `  No customer profile found for ${userId} (continuing without)`
+        );
       }
 
-      // Build personalized system prompt
-      const systemPrompt = buildSystemPrompt(customerProfile);
+      // Build personalized system prompt with live catalog facets and
+      // recent behavioral context. Empty interaction history is fine -
+      // the prompt template handles the placeholder either way.
+      const interactionHistory = formatInteractionHistory(recentInteractions);
+      const systemPrompt = await buildSystemPrompt(
+        facets,
+        customerProfile,
+        interactionHistory
+      );
 
       // Create agent with conversation history from UI
       // (Container may restart between requests, so we can't rely on in-memory state)
@@ -533,56 +603,117 @@ const app = new BedrockAgentCoreApp({
         prompt
       );
 
-      // Invoke the agent with the new prompt
-      const result = await agent.invoke(prompt);
-      let response = result.toString();
+      // Reset the per-request tool log before invoking the agent so we
+      // only capture results from THIS turn, not previous ones (the
+      // accumulator is module-scoped because Strands tools have no
+      // straightforward request-context plumbing).
+      resetToolLog();
 
-      // Detect guardrail interventions. The guardrail replaces blocked
-      // output with the configured `blockedOutputsMessaging`, often
-      // mid-stream (we'll see "<partial response>I'm sorry, I can't
-      // provide that information..."). Detecting this lets us turn a
-      // confusing truncation into a clear explanation for the customer.
-      const BLOCK_MESSAGE = "I'm sorry, I can't provide that information.";
-      if (response.includes(BLOCK_MESSAGE)) {
-        const beforeBlock = response.split(BLOCK_MESSAGE)[0].trim();
-        const wasMidStream = beforeBlock.length > 0;
-        console.warn("[guardrail] Output blocked", {
-          wasMidStream,
-          partialLength: beforeBlock.length,
+      // Invoke the agent with the new prompt
+      const rawResponse = (await agent.invoke(prompt)).toString();
+
+      // Build the response envelope. We accept three shapes from Claude:
+      //   1. Valid JSON envelope              -> use as-is
+      //   2. Markdown-fenced JSON envelope    -> strip fence and parse
+      //   3. Anything else (free prose, etc.) -> coerce into type="answer"
+      // We also detect Bedrock's blockedOutputsMessaging substring and
+      // override to type="blocked" regardless of what Claude wrote.
+      const envelope = buildEnvelope(rawResponse);
+
+      // Attach product cards from the per-request tool log. The runtime
+      // is the source of truth for product data - Claude never sees
+      // links/images directly, so it can't hallucinate them.
+      const cardsByTool = toolCallLog.flatMap((t) => t.results);
+      if (envelope.type === "answer" && cardsByTool.length > 0) {
+        // De-dupe by id, preserving order of first appearance
+        const seen = new Set<string>();
+        envelope.recommendations = cardsByTool.filter((c) => {
+          if (seen.has(c.id)) return false;
+          seen.add(c.id);
+          return true;
         });
-        if (wasMidStream) {
-          // Replace the truncation with something self-aware. Trim trailing
-          // partial words/punctuation/dashes to avoid sentences cutting off.
-          const trimmed = beforeBlock.replace(/[\s\-,:;.]*$/, "");
-          response =
-            `${trimmed}\n\n_(The system flagged part of my answer mid-response. ` +
-            `Try a more specific query - e.g., a particular theme, color, or ` +
-            `occasion - and I can give you a complete list.)_`;
-        } else {
-          // Whole response was blocked - keep the canned message but make it
-          // actionable.
-          response =
-            "I couldn't complete that request. Try rephrasing with a specific " +
-            "theme, occasion, or product category and I'll do my best.";
-        }
+      }
+      if (toolCallLog.length > 0) {
+        envelope.meta = {
+          ...(envelope.meta || {}),
+          toolsCalled: toolCallLog.map((t) => t.tool),
+        };
       }
 
-      // Store the assistant response in long-term memory.
-      // Strip the <followups>...</followups> JSON block - it's UI scaffolding,
-      // not semantic content, and would pollute the customer's memory record
-      // and any future RAG searches over conversation history.
-      const memoryText = response.replace(/<followups>[\s\S]*?<\/followups>/g, "").trim();
+      // Persist a clean prose-only version to long-term memory. The JSON
+      // envelope itself would pollute memory recall.
+      const memoryText = envelope.message;
       await storeConversationEvent(
         sessionId,
         actorId,
         "assistant",
-        memoryText || response
+        memoryText || rawResponse
       );
 
-      return response;
+      // Return the envelope as a JSON string. Lambda forwards it through
+      // unchanged; the UI parses on the other side.
+      return JSON.stringify(envelope);
     },
   },
 });
+
+/**
+ * Coerce whatever Claude returned into a valid ChatResponse envelope.
+ * Handles three cases (in order):
+ *   1. Bedrock guardrail block message present -> type="blocked"
+ *   2. Valid JSON envelope -> use as-is (with stripping of any markdown fence)
+ *   3. Anything else -> wrap as type="answer" with the raw text as message
+ */
+function buildEnvelope(raw: string): ChatResponse {
+  // 1. Guardrail intervention check. Bedrock's blockedOutputsMessaging
+  // (configured in guardrail-cdk) starts with "I'm sorry, I can't provide
+  // that information." We detect on substring because mid-stream blocks
+  // concatenate the message onto whatever was being emitted.
+  const BLOCK_MARKER = "I'm sorry, I can't provide that information.";
+  if (raw.includes(BLOCK_MARKER)) {
+    const beforeBlock = raw.split(BLOCK_MARKER)[0].trim();
+    const wasMidStream = beforeBlock.length > 0;
+    console.warn("[guardrail] Output blocked", {
+      wasMidStream,
+      partialLength: beforeBlock.length,
+    });
+    return {
+      type: "blocked",
+      message: wasMidStream
+        ? "Part of my response was filtered. Try a more specific query - e.g., a particular theme, color, or occasion - and I can give you a complete list."
+        : "I couldn't complete that request. Try rephrasing with a specific theme, occasion, or product category.",
+      meta: { blockedReason: wasMidStream ? "mid-stream" : "full-block" },
+    };
+  }
+
+  // 2. Try to parse as JSON envelope (with optional markdown fence).
+  let candidate = raw.trim();
+  const fenced = candidate.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+  if (fenced) candidate = fenced[1].trim();
+  try {
+    const parsed = JSON.parse(candidate) as Partial<ChatResponse>;
+    if (
+      typeof parsed.type === "string" &&
+      typeof parsed.message === "string" &&
+      ["answer", "followup", "blocked"].includes(parsed.type)
+    ) {
+      return parsed as ChatResponse;
+    }
+  } catch {
+    // not JSON, fall through to coercion
+  }
+
+  // 3. Coerce free-form prose into type="answer". This is the safety net
+  // for when Claude forgets the format - the user still sees something
+  // useful, and we log so you can spot drift in CloudWatch.
+  console.warn("[envelope] Claude returned non-JSON output, coercing to type=answer", {
+    preview: raw.slice(0, 200),
+  });
+  return {
+    type: "answer",
+    message: raw,
+  };
+}
 
 app.run();
 

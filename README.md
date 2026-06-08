@@ -46,6 +46,103 @@ flowchart LR
 - Parallel Glue uploads (up to 10 concurrent)
 - ~25 min for 123K products end-to-end
 
+### Recommendation Engine
+
+Three dedicated tools handle product recommendations:
+
+| Tool | When the agent picks it |
+|---|---|
+| `recommend_products` | Customer describes an event with criteria (theme, occasion, budget, guest count). Over-fetches candidates, filters out-of-stock, re-ranks by customer profile. |
+| `personalized_search` | Free-text search where the customer is known. Adds profile signal at re-rank time. |
+| `recommend_for_customer` | Known customer asks "what should I buy?" with no event context. Pure profile-driven. |
+| `search_products` | Anonymous keyword search (fallback). |
+
+The agent always returns a structured JSON response envelope (`type`, `message`, optional `recommendations`, optional `followups`) which the UI parses into product cards (with title, price, image, link) plus optional refinement chips. See [`agent/response-envelope.ts`](agent/response-envelope.ts) for the schema.
+
+### Behavioral Data (User Interactions)
+
+The agent can also reason over a user-item event log (views, add-to-cart, purchases). Each row of an interactions CSV becomes one vector in `interactions-index`:
+
+```csv
+USER_ID,ITEM_ID,TIMESTAMP,EVENT_TYPE,EVENT_VALUE,QUANTITY,PRICE,RECOMMENDATION_ID
+CUST-100042,PROD-0001234,1777423645,add_to_cart,2.0,1,3.97,
+CUST-100128,PROD-0009876,1777421241,purchase,5.0,1,8.79,
+CUST-100599,PROD-0050321,1777423969,view,1.0,0,5.07,Recently Viewed
+```
+
+| Tool | When the agent picks it |
+|---|---|
+| `query_interactions` | Behavioral questions: "what have I been browsing", "items I added to cart but didn't buy", "show me recent views by user X". Returns event records (userId, itemId, eventType, timestamp, price). |
+
+The agent typically pairs `query_interactions` (returns IDs) with `search_products` (enriches them with title/price/link/image cards), e.g., for a "what items did I add to cart this week" query.
+
+#### Generating fixtures
+
+The bulk fixture generator produces interactions that reference real IDs from the products and customers files, so the data stays coherent end-to-end:
+
+```bash
+npx tsx scripts/generate-bulk-csv.ts
+# Writes: 100K products, 5K customers, 25K interactions, 500 sample interactions
+```
+
+| File | Rows | Purpose |
+|---|---|---|
+| `uploads/sample-products.csv` / `sample-customers.csv` / `sample-interactions.csv` | 10 / 10 / 500 | Tiny fixture, useful for smoke tests |
+| `uploads/products.csv` / `customers.csv` / `interactions.csv` | 100K / 5K / 25K | Bulk import (regenerable, gitignored) |
+
+Sizes are configurable: `npx tsx scripts/generate-bulk-csv.ts --interactions 50000 --sample-interactions 1000`
+
+#### Importing
+
+```bash
+./scripts/batch-import.sh -i uploads/interactions.csv --mode replace
+```
+
+Same Step Functions pipeline as products/customers: dedup (by `user+item+timestamp` composite key) → embed via Bedrock Batch → upload to S3 Vectors. 25K events finishes in ~10 min.
+
+### Customer Selector (UI)
+
+The chat UI has a **customer selector** in the top-right toolbar. When you pick a customer, every subsequent chat request loads that customer's profile and last 10 interactions and injects them into the agent's system prompt - so the agent answers as if it knows who you are without you having to tell it.
+
+How it works:
+
+1. The selector fetches the full list once via the gateway's `list_customers` MCP tool (Lambda → S3 Vectors `ListVectors`). ~5K customers loads in ~500ms.
+2. Type-ahead filters across `userId`, segment, region, and preferred theme - all client-side, no extra calls.
+3. Picking a customer fires a system message ("Now chatting as **CUST-XXX**...") and persists the selection in `sessionStorage` so a page reload keeps it active.
+4. Each chat request now sends `userId` alongside the prompt. The agent runtime loads the profile + recent interactions in parallel with catalog facets (~300-500ms total) and renders them into the `PROFILE_BLOCK` section of the system prompt via the `{{PROFILE_CONTEXT}}`, `{{PROFILE_TIPS}}`, and `{{INTERACTION_HISTORY}}` placeholders.
+5. Click **Clear** in the selector to remove personalization for the rest of the session.
+
+The selector requires the Lambda to be redeployed (it gets a new `list_customers` tool handler and an extra IAM policy for `s3vectors:ListVectors`) and the gateway to re-register both tools:
+
+```bash
+./scripts/deploy.sh --lambda --gateway-target
+```
+
+### Prompt Management
+
+System prompts live in [`agent/prompts.md`](agent/prompts.md) and are uploaded to a DynamoDB table on deploy. The runtime polls the table every 60 seconds, so you can edit prompts and push updates **without rebuilding the agent container**:
+
+```bash
+# Edit agent/prompts.md, then:
+./scripts/deploy.sh --prompts    # ~5 seconds, live in <=60s
+```
+
+`--prompts` also bumps a `_meta.cacheBust` sentinel in the same table. The runtime watches that value, so on the next poll it **also refreshes the catalog-facet cache** — meaning newly imported themes, occasions, and categories show up in chip suggestions automatically. Re-run `--prompts` after a batch import to pick them up:
+
+```bash
+./scripts/batch-import.sh -p uploads/products.csv -c uploads/customers.csv --mode replace
+./scripts/deploy.sh --prompts    # signals the runtime to re-sample the catalog
+```
+
+See [docs/customization.md](docs/customization.md) for details on customizing personas, tools, and recommendation behavior.
+
+### Performance Optimizations
+
+- **LRU embedding cache** — repeated queries (chip submissions, common themes) skip the Titan API call entirely (-150-300ms each)
+- **Parallel profile + vector search** — recommendation tools fetch the customer profile and run the vector query simultaneously (-300-500ms when personalized)
+- **Lambda warm-up** — EventBridge pings the gateway Lambda every 5 minutes so first requests don't pay cold start cost (-1-2s on idle)
+- **Catalog facet cache** — themes/occasions/categories are sampled once at runtime startup and used to populate refinement chips with values that actually exist in the catalog
+
 ## Prerequisites
 
 - AWS Account with credentials configured
@@ -121,25 +218,32 @@ npm install && cd agent && npm install && cd ../chat-ui && npm install && cd ..
 # 2. Login
 aws login && export AWS_REGION=us-west-2
 
-# 3. Deploy agent + gateway
+# 3. Deploy agent + gateway (also seeds 20 products, 10 customers, 10 orders, 50 interactions)
 ./scripts/deploy.sh --all
 
-# 4. Deploy batch import infrastructure (one-time)
+# 4. Deploy batch import infrastructure (one-time, only needed for bulk CSV imports)
 ./scripts/deploy.sh --batch-async
 
-# 5. Import your data (products + customers)
-./scripts/batch-import.sh -p uploads/products.csv -c uploads/customers.csv --mode replace
+# 5. (Optional) Generate bulk fixtures - 100K products, 5K customers, 25K interactions
+npx tsx scripts/generate-bulk-csv.ts
 
-# 6. Monitor import progress
+# 6. (Optional) Bulk-import your own catalog + behavioral data
+./scripts/batch-import.sh \
+  -p uploads/products.csv \
+  -c uploads/customers.csv \
+  -i uploads/interactions.csv \
+  --mode replace
+
+# 7. Monitor import progress
 ./scripts/batch-status.sh
 
-# 7. Run UI
+# 8. Run UI
 ./scripts/run-local-ui.sh --port 3000
 ```
 
 > **Windows users:** Run all scripts using Git Bash or WSL, not PowerShell directly.
 
-The deploy script handles agent runtime, gateway, Lambda, and S3 Vectors setup. The batch import pipeline uses Step Functions to orchestrate Glue ETL, Bedrock Batch inference, and vector uploads.
+The deploy script handles agent runtime, gateway, Lambda, and S3 Vectors setup, and seeds a small synthetic catalog so you can chat immediately. The optional batch import pipeline uses Step Functions (Glue ETL → Bedrock Batch → vector upload) for production-sized data — pass any combination of `-p` / `-c` / `-i` depending on what you want to import.
 
 ## Scripts
 
@@ -147,8 +251,10 @@ The deploy script handles agent runtime, gateway, Lambda, and S3 Vectors setup. 
 |--------|---------|
 | `./scripts/deploy.sh --all` | Full deployment |
 | `./scripts/deploy.sh --agent` | Deploy agent + gateway + memory only |
+| `./scripts/deploy.sh --prompts` | **Update prompts only** (no agent rebuild, live in <=60s) |
 | `./scripts/deploy.sh --lambda --gateway-target` | Redeploy Lambda + rewire |
 | `./scripts/deploy.sh --batch-async` | Deploy batch processing infrastructure (CDK) |
+| `./scripts/deploy.sh --guardrail` | Update Bedrock Guardrail config |
 | `./scripts/deploy.sh --status` | Show status + update UI config |
 | `./scripts/import-csv.sh` | Import customer CSV data (see below) |
 | `./scripts/batch-import.sh` | Batch import for large datasets (100K+) |
@@ -159,6 +265,10 @@ The deploy script handles agent runtime, gateway, Lambda, and S3 Vectors setup. 
 
 Run `./scripts/deploy.sh --help` for all switches.
 
+### Customization
+
+The agent's system prompt lives in [`agent/prompts.md`](agent/prompts.md). Edit it and run `./scripts/deploy.sh --prompts` for live updates in 60 seconds. See [docs/customization.md](docs/customization.md) for the full guide on tuning persona, tool selection, and recommendation behavior.
+
 ## Guardrails
 
 The agent includes Bedrock Guardrails for content filtering and safety. Guardrails are deployed automatically with the AgentCore CDK stack.
@@ -167,15 +277,17 @@ The agent includes Bedrock Guardrails for content filtering and safety. Guardrai
 
 | Category | Setting | Description |
 |----------|---------|-------------|
-| Content Filters | HATE, VIOLENCE, SEXUAL, MISCONDUCT | HIGH strength blocking |
-| Content Filters | INSULTS | MEDIUM strength blocking |
+| Content Filters | HATE | HIGH strength blocking |
+| Content Filters | INSULTS, SEXUAL, VIOLENCE, MISCONDUCT | LOW strength blocking |
 | Denied Topics | Competitors | Blocks recommendations for competitor stores |
 | Denied Topics | Politics | Blocks political discussions |
 | Denied Topics | Medical/Legal Advice | Blocks liability-prone advice |
 | PII Protection | Credit cards, SSN, bank info | BLOCKED |
 | PII Protection | Email, phone, name, address | ANONYMIZED |
 
-**Note:** Religious content is NOT blocked since party supplies include religious occasions (Christmas, Hanukkah, Easter, Diwali, Eid, etc.).
+**Note:** Religious content is NOT blocked since party supplies include religious occasions (Christmas, Hanukkah, Easter, Diwali, Eid, etc.). Most filters are tuned to LOW because Bedrock's pretrained classifiers false-positive on legitimate party-supply terms (e.g., bachelor party, "toddler birthday") at MEDIUM and above. HATE stays HIGH.
+
+If a streaming response gets cut off mid-token, the runtime detects the guardrail intervention and replaces the truncation with an actionable message (see [`agent/agent.ts`](agent/agent.ts) `buildEnvelope`). Block messages render as a styled error banner in the UI rather than as garbled text.
 
 ### Configuration
 
@@ -392,6 +504,8 @@ If `userId` is not provided or the profile doesn't exist, the agent continues no
 | Doc | Description |
 |-----|-------------|
 | [`docs/iam-policy.json`](docs/iam-policy.json) | Least-privilege IAM policy (replace `YOUR_ACCOUNT_ID` / `YOUR_REGION`) |
+| [`docs/customization.md`](docs/customization.md) | Edit prompts, persona, recommendation flow, chip categories, guardrail (no rebuild) |
+| [`docs/path-to-production.md`](docs/path-to-production.md) | Going from dev deploy to prod: accounts, CI/CD, data pipeline, observability, security |
 | [`docs/adding-tools.md`](docs/adding-tools.md) | Step-by-step guide for adding new tools to the agent |
 | [`docs/tech-features.md`](docs/tech-features.md) | Technical details: memory, RAG, SDK workarounds, gotchas |
 

@@ -16,14 +16,18 @@
 #   ./scripts/batch-import.sh -p products.csv [options]
 #
 # Options:
-#   -p, --products <file>    Path to products CSV file
-#   -c, --customers <file>   Path to customers CSV file
-#   --mode <mode>            Upload mode: upsert (default), replace, append
-#   --region <region>        AWS region (default: us-west-2)
-#   --help                   Show this help message
+#   -p, --products <file>      Path to products CSV file
+#   -c, --customers <file>     Path to customers CSV file
+#   -i, --interactions <file>  Path to interactions CSV file (USER_ID, ITEM_ID,
+#                              TIMESTAMP, EVENT_TYPE, EVENT_VALUE, QUANTITY,
+#                              PRICE, RECOMMENDATION_ID columns)
+#   --mode <mode>              Upload mode: upsert (default), replace, append
+#   --region <region>          AWS region (default: us-west-2)
+#   --help                     Show this help message
 #
 # Example:
 #   ./scripts/batch-import.sh -p uploads/products.csv --mode replace
+#   ./scripts/batch-import.sh -i uploads/interactions.csv
 #
 
 set -e
@@ -34,6 +38,7 @@ export AWS_PAGER=""
 REGION="${AWS_REGION:-us-west-2}"
 PRODUCTS_FILE=""
 CUSTOMERS_FILE=""
+INTERACTIONS_FILE=""
 UPLOAD_MODE="upsert"
 
 # ─── Parse Arguments ─────────────────────────────────────────────────────────
@@ -46,6 +51,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     -c|--customers)
       CUSTOMERS_FILE="$2"
+      shift 2
+      ;;
+    -i|--interactions)
+      INTERACTIONS_FILE="$2"
       shift 2
       ;;
     --mode)
@@ -67,8 +76,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$PRODUCTS_FILE" && -z "$CUSTOMERS_FILE" ]]; then
-  echo "Error: At least one of --products or --customers must be specified"
+if [[ -z "$PRODUCTS_FILE" && -z "$CUSTOMERS_FILE" && -z "$INTERACTIONS_FILE" ]]; then
+  echo "Error: At least one of --products, --customers, or --interactions must be specified"
   echo "Run with --help for usage"
   exit 1
 fi
@@ -163,6 +172,15 @@ if [[ -n "$CUSTOMERS_FILE" ]]; then
     exit 1
   fi
   start_batch_import "customers" "$CUSTOMERS_FILE"
+fi
+
+# Process interactions
+if [[ -n "$INTERACTIONS_FILE" ]]; then
+  if [[ ! -f "$INTERACTIONS_FILE" ]]; then
+    echo "Error: Interactions file not found: $INTERACTIONS_FILE"
+    exit 1
+  fi
+  start_batch_import "interactions" "$INTERACTIONS_FILE"
 fi
 
 log "Batch import initiated!"

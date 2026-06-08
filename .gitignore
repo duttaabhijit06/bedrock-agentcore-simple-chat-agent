@@ -73,6 +73,7 @@ lambda/node_modules/
 # (sample-*.csv stays committed; full-size files are regenerable)
 uploads/products.csv
 uploads/customers.csv
+uploads/interactions.csv
 
 # Local-only AWS credentials helper (pulls EC2 IMDS creds at runtime)
 refresh_aws_credentials.sh

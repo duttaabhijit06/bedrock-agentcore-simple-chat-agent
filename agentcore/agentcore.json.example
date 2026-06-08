@@ -35,6 +35,10 @@
         {
           "name": "GUARDRAIL_VERSION",
           "value": "1"
+        },
+        {
+          "name": "PROMPTS_TABLE_NAME",
+          "value": "party-supply-prompts"
         }
       ]
     }

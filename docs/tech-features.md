@@ -121,8 +121,8 @@ curl -s --aws-sigv4 "aws:amz:us-west-2:bedrock-agentcore" \
 
 | Issue | Fix |
 |-------|-----|
-| Docker Hub rate limits on CodeBuild | Use `public.ecr.aws/docker/library/node:20-slim` |
-| `useradd: UID 1000 is not unique` | Use UID 1001 (node:20-slim uses 1000) |
+| Docker Hub rate limits on CodeBuild | Use `public.ecr.aws/docker/library/node:22-slim` |
+| `useradd: UID 1000 is not unique` | Use UID 1001 (node:22-slim uses 1000) |
 | Model ID `us.anthropic.claude-sonnet-4-5-20250514` invalid | Correct: `us.anthropic.claude-sonnet-4-5-20250929-v1:0` |
 | Lambda rejects `AWS_REGION` env var | Use `AGENT_REGION` (AWS_REGION is reserved) |
 | S3 Vectors `create-index` missing param | Requires `--data-type float32` |

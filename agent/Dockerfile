@@ -1,4 +1,4 @@
-FROM public.ecr.aws/docker/library/node:20-slim AS builder
+FROM public.ecr.aws/docker/library/node:22-slim AS builder
 
 WORKDIR /app
 COPY package*.json ./
@@ -10,7 +10,7 @@ RUN if [ ! -f tsconfig.json ]; then \
 fi
 RUN node node_modules/typescript/bin/tsc
 
-FROM public.ecr.aws/docker/library/node:20-slim
+FROM public.ecr.aws/docker/library/node:22-slim
 WORKDIR /app
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules

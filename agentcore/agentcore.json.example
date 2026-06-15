@@ -12,7 +12,7 @@
       "build": "Container",
       "entrypoint": "agent.ts",
       "codeLocation": "agent/",
-      "runtimeVersion": "NODE_20",
+      "runtimeVersion": "NODE_22",
       "networkMode": "PUBLIC",
       "protocol": "HTTP",
       "envVars": [

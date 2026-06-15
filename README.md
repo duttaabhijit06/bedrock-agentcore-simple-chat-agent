@@ -9,7 +9,7 @@ A lightweight chat agent built with Amazon Bedrock AgentCore using Claude Sonnet
 flowchart LR
     UI["Chat UI<br/>(React + SigV4)"]
     GW["AgentCore Gateway<br/>(MCP, IAM Auth)"]
-    LM["Lambda Target<br/>(Node.js 20)"]
+    LM["Lambda Target<br/>(Node.js 24)"]
     RT["AgentCore Runtime<br/>(Strands Agent + Claude 4.5)"]
     S3["S3 Vectors<br/>(Titan Embed V2)"]
     MEM["AgentCore Memory<br/>(Long-term)"]
@@ -147,7 +147,7 @@ See [docs/customization.md](docs/customization.md) for details on customizing pe
 
 - AWS Account with credentials configured
 - AWS CLI v2 ([Install Guide](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html))
-- Node.js 20+ and npm 9+
+- Node.js 22+ and npm 10+ (Node 20 reached EOL on 2026-04-30)
 - Docker (local testing only; CodeBuild handles remote builds)
 - AgentCore CLI: `npm install -g @aws/agentcore`
 - A POSIX shell (Git Bash, WSL, or any Linux/macOS shell) — PowerShell is not supported

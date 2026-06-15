@@ -190,7 +190,7 @@ export class BatchProcessingStack extends cdk.Stack {
 
     const submitBatchLambda = new lambda.Function(this, "SubmitBatchLambda", {
       functionName: "PartySupplyBatchSubmit",
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       handler: "submit-batch.handler",
       code: lambda.Code.fromAsset(lambdaCodePath),
       role: lambdaRole,
@@ -207,7 +207,7 @@ export class BatchProcessingStack extends cdk.Stack {
 
     const checkJobsLambda = new lambda.Function(this, "CheckJobsLambda", {
       functionName: "PartySupplyBatchCheckJobs",
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       handler: "check-jobs.handler",
       code: lambda.Code.fromAsset(lambdaCodePath),
       role: lambdaRole,
@@ -222,7 +222,7 @@ export class BatchProcessingStack extends cdk.Stack {
 
     const flushIndexLambda = new lambda.Function(this, "FlushIndexLambda", {
       functionName: "PartySupplyBatchFlushIndex",
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       handler: "flush-index.handler",
       code: lambda.Code.fromAsset(lambdaCodePath),
       role: lambdaRole,

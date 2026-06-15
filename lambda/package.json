@@ -1,11 +1,11 @@
 {
   "name": "party-supply-gateway-handler",
   "version": "1.0.0",
-  "description": "Gateway Lambda target that invokes the AgentCore Runtime",
+  "description": "Gateway Lambda target. Production runtime is nodejs24.x (configured in scripts/deploy.sh); engines.node is set to >=22 so local builds with Node 22 still work.",
   "type": "module",
   "main": "index.mjs",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-agentcore": "^3.1047.0",

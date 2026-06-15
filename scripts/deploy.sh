@@ -15,7 +15,7 @@ export AWS_PAGER=""
 #
 # Learnings baked in:
 #   - Use public.ecr.aws base images in Dockerfile (Docker Hub rate limits on CodeBuild)
-#   - UID 1001 in Dockerfile (node:20-slim already uses UID 1000)
+#   - UID 1001 in Dockerfile (node:22-slim already uses UID 1000)
 #   - Model ID: us.anthropic.claude-sonnet-4-5-20250929-v1:0 (not the 20250514 variant)
 #   - Lambda env var: AGENT_REGION not AWS_REGION (reserved in Lambda)
 #   - S3 Vectors create-index requires --data-type float32
@@ -697,6 +697,13 @@ step_lambda() {
 
   # Create or update Lambda function
   # NOTE: Use AGENT_REGION not AWS_REGION (AWS_REGION is reserved in Lambda)
+  # Pinned to nodejs24.x (Node 24 LTS). Node 20 reached end-of-support
+  # on 2026-04-30 and AWS Lambda emits deprecation alarms for 20.x
+  # runtimes. We jump straight to 24 (skipping 22) so the next forced
+  # migration is years away rather than ~18 months. Bump again when
+  # Node 24 starts approaching its own EOL (~2028).
+  LAMBDA_RUNTIME="nodejs24.x"
+
   echo "  Deploying Lambda: ${LAMBDA_NAME}"
   if aws lambda get-function --function-name "${LAMBDA_NAME}" --region "${REGION}" >/dev/null 2>&1; then
     aws lambda update-function-code \
@@ -704,15 +711,19 @@ step_lambda() {
       --zip-file "fileb://${LAMBDA_ZIP}" \
       --region "${REGION}" > /dev/null
     sleep 5
+    # update-function-configuration accepts --runtime, so existing
+    # functions get migrated off Node 20 on the next --lambda deploy
+    # without anyone having to recreate them.
     aws lambda update-function-configuration \
       --function-name "${LAMBDA_NAME}" \
+      --runtime "${LAMBDA_RUNTIME}" \
       --environment "Variables={AGENT_REGION=${REGION},RUNTIME_ARN=${RUNTIME_ARN},VECTOR_BUCKET_NAME=${VECTOR_BUCKET_NAME}}" \
       --timeout 120 \
       --region "${REGION}" > /dev/null 2>&1 || true
   else
     aws lambda create-function \
       --function-name "${LAMBDA_NAME}" \
-      --runtime "nodejs20.x" \
+      --runtime "${LAMBDA_RUNTIME}" \
       --role "${ROLE_ARN}" \
       --handler "index.handler" \
       --zip-file "fileb://${LAMBDA_ZIP}" \

@@ -21,6 +21,42 @@ flowchart LR
     RT -->|"Store/Retrieve"| MEM
 ```
 
+### Session Management & History
+
+How the UI's "Recent (48h)" sidebar, "+ New chat" button, and per-customer threads are wired up — all backed by **AgentCore Memory** as the single source of truth (no separate session store):
+
+```mermaid
+flowchart LR
+    UI["Chat UI<br/>(React + sessionStorage)"]
+    SB["Sidebar<br/>(SessionHistory.tsx)"]
+    GW["AgentCore Gateway<br/>(MCP, IAM)"]
+    LM["Lambda Target<br/>(list_sessions /<br/>get_session_history)"]
+    RT["AgentCore Runtime<br/>(storeConversationEvent)"]
+    MEM["AgentCore Memory<br/>(actorId → sessionId → events)"]
+
+    UI -->|"+ New chat /<br/>switch customer<br/>(mint fresh sessionId)"| UI
+    UI -->|"chat tool<br/>{actorId, sessionId,<br/>userId, prompt}"| GW
+    GW --> LM
+    LM -->|"InvokeAgentRuntime"| RT
+    RT -->|"CreateEvent<br/>(USER + ASSISTANT)"| MEM
+
+    SB -->|"list_sessions<br/>(every 30s + on demand)"| GW
+    GW -.-> LM
+    LM -->|"ListSessions +<br/>ListEvents fanout"| MEM
+    MEM -->|"sessions sorted by<br/>lastEventAt desc"| SB
+
+    SB -->|"resume click →<br/>get_session_history"| GW
+    LM -->|"ListEvents<br/>(oldest first)"| MEM
+    MEM -->|"messages timeline"| UI
+```
+
+Behavior summary:
+
+- **Session lifecycle** — UI mints `sessionId` lazily; AgentCore Memory creates the session record on the first `CreateEvent`. Switching customer or clicking **+ New chat** rotates the sessionId, so each thread is isolated per actor.
+- **Sidebar refresh** — three triggers: (1) actorId change, (2) `+ New chat` / post-send nudge, (3) silent 30s background poll. Configurable via `VITE_HISTORY_WINDOW_HOURS` and `VITE_HISTORY_POLL_SECONDS`.
+- **`lastEventAt` filtering** — `list_sessions` derives `lastEventAt` from per-session `ListEvents`, then filters by `lastEventAt >= sinceMs`. A reused sessionId with fresh activity surfaces correctly even when its `createdAt` is days old.
+- **Credential expiry** — UI tracks `expiresAt` (from `aws configure export-credentials`) and 60s-polls for expiry; STS/SigV4 401/403s reroute the user to the credentials form rather than failing silently.
+
 ### Batch Import Flow (100K+ records)
 ```mermaid
 flowchart LR

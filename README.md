@@ -201,16 +201,30 @@ The Lambda needs `bedrock-agentcore:ListSessions` and `bedrock-agentcore:ListEve
 
 #### Calling from any MCP client
 
-Both tools are part of the standard MCP `toolSchema` on the gateway target, so they're not browser-only — anything that can speak MCP-over-HTTPS with SigV4 (Claude Desktop, a downstream agent, your own Node/Python/Go code) can list and resume sessions through the same gateway URL. A runnable example lives at [examples/nodejs-client/session-history.js](examples/nodejs-client/session-history.js):
+Both tools are part of the standard MCP `toolSchema` on the gateway target, so they're not browser-only — anything that can speak MCP-over-HTTPS with SigV4 (Claude Desktop, a downstream agent, your own Node/Python/Go code) can list and resume sessions through the same gateway URL.
+
+Two runnable examples live alongside this repo:
+
+| Example | Use case |
+|---|---|
+| [examples/nodejs-client/](examples/nodejs-client/) | Local CLI / Node script — uses a user's AWS profile via the default credential chain. Good for testing and embedding in a React app. |
+| [examples/lambda-mcp-client/](examples/lambda-mcp-client/) | AWS Lambda (Node.js 24.x) — uses the execution-role credentials. Good for embedding into Step Functions, API Gateway, EventBridge workflows. Ships with a one-command `deploy.sh`. |
 
 ```bash
+# Local Node CLI
 export AGENTCORE_GATEWAY_URL="https://your-gateway.gateway.bedrock-agentcore.us-west-2.amazonaws.com"
 cd examples/nodejs-client && npm install
 node session-history.js list   CUST-100005
 node session-history.js resume CUST-100005 session-1780951267383-7bm7iut
+
+# Lambda (auto-detects gateway URL, creates IAM role, deploys on nodejs24.x)
+cd examples/lambda-mcp-client && ./deploy.sh
+aws lambda invoke --function-name agentcore-lambda-example --region us-west-2 \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"action":"list_sessions","actorId":"CUST-100005"}' /tmp/out.json && cat /tmp/out.json
 ```
 
-See [examples/nodejs-client/README.md](examples/nodejs-client/README.md#calling-session-history-mcp-tools) for the full walkthrough, including a programmatic-use snippet (`listSessions`, `getSessionHistory`, generic `callTool`) and the JSON shapes each tool returns.
+See each example's README for the full walkthrough including programmatic snippets, IAM requirements, and the JSON shapes each tool returns.
 
 ### Prompt Management
 

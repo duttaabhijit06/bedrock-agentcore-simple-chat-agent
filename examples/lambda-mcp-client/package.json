@@ -1,0 +1,20 @@
+{
+  "name": "agentcore-lambda-mcp-client",
+  "version": "1.0.0",
+  "description": "AWS Lambda example for calling the AgentCore Gateway MCP endpoints",
+  "main": "index.mjs",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "_runtime": "Production: nodejs24.x. The Lambda runtime ships @aws-sdk/* and @smithy/* preinstalled, so deps below are only needed for local invocation/bundling."
+  },
+  "dependencies": {
+    "@aws-crypto/sha256-js": "^5.2.0",
+    "@aws-sdk/credential-providers": "^3.787.0",
+    "@smithy/protocol-http": "^5.1.0",
+    "@smithy/signature-v4": "^5.0.2"
+  }
+}

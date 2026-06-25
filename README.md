@@ -118,6 +118,64 @@ The selector requires the Lambda to be redeployed (it gets a new `list_customers
 ./scripts/deploy.sh --lambda --gateway-target
 ```
 
+### Recent Conversations Sidebar (UI)
+
+The left side of the chat shows the **last 48 hours of conversations** for the currently selected customer, with each session's opening prompt as a one-line preview. Click any entry to **resume** that conversation - the chat re-hydrates from the past timeline and new messages continue the same thread.
+
+Backed by **AgentCore Memory** directly - no separate database. Two new MCP tools sit on the gateway Lambda:
+
+| Tool | What it does |
+|---|---|
+| `list_sessions` | Wraps `bedrock-agentcore:ListSessions` for the actor, collects a pool of recent sessions, then fan-outs `ListEvents` per session to derive both the first user prompt and `lastEventAt`. Filters by `lastEventAt >= sinceMs` (so reused sessionIds with fresh activity still surface) and sorts newest-first by last activity. ~500ms for 20 sessions. |
+| `get_session_history` | Wraps `bedrock-agentcore:ListEvents` for a single session, sorts oldest-first, and returns `[{role, content, timestamp}]` so the UI can re-hydrate the chat. |
+
+How it fits together:
+
+1. Pick a customer in the toolbar. The sidebar re-fetches for that actor.
+2. See the list of sessions newest-first with relative timestamps ("2h ago", "1d ago").
+3. Click an entry. The UI swaps `sessionId` and replaces the message list with the past timeline (system banner: *"Resumed past conversation (8 messages)..."*). Any new message you send continues that thread because AgentCore Memory keys events on `sessionId`.
+4. The currently active session is highlighted with a `current` tag and disabled.
+
+Sidebar auto-refreshes:
+- **+ New chat** button (next to the customer dropdown) → mints a fresh `sessionId`, clears the message pane, and immediately reloads the sidebar.
+- **After every successful send** → the sidebar reloads so a brand-new session pops in without waiting for the next poll.
+- **Background polling** every 30 seconds (silent — no loading flicker) keeps the list fresh even when you're idle.
+
+#### Configurable sidebar behavior
+
+Two Vite env vars let you tune the sidebar without touching code. Add them to `chat-ui/.env.local`:
+
+| Var | Default | Effect |
+|---|---|---|
+| `VITE_HISTORY_WINDOW_HOURS` | `48` | Lookback window. The header label and empty-state copy auto-derive (e.g. `Recent (7d)` when set to `168`). |
+| `VITE_HISTORY_POLL_SECONDS` | `30` | Background poll cadence. Set to `0` to disable polling entirely — the manual refresh chip and the post-send nudge still work. |
+
+```bash
+# chat-ui/.env.local
+VITE_HISTORY_WINDOW_HOURS=168     # show a week of sessions
+VITE_HISTORY_POLL_SECONDS=15      # poll twice as often
+```
+
+Things to know:
+- Past sessions render as **plain prose** - product cards and chips aren't recoverable since AgentCore Memory only stores the textual payload, not the envelope metadata.
+- The sidebar is hidden on screens narrower than 720px (the chat takes full width on mobile).
+- AgentCore Memory auto-deletes empty sessions after 1 day; populated short-term events expire on the memory's `eventExpiryDuration` schedule (default 30 days).
+
+The Lambda needs `bedrock-agentcore:ListSessions` and `bedrock-agentcore:ListEvents` IAM permissions plus a `MEMORY_ID` env var. Both are wired automatically by `./scripts/deploy.sh --lambda --gateway-target`.
+
+#### Calling from any MCP client
+
+Both tools are part of the standard MCP `toolSchema` on the gateway target, so they're not browser-only — anything that can speak MCP-over-HTTPS with SigV4 (Claude Desktop, a downstream agent, your own Node/Python/Go code) can list and resume sessions through the same gateway URL. A runnable example lives at [examples/nodejs-client/session-history.js](examples/nodejs-client/session-history.js):
+
+```bash
+export AGENTCORE_GATEWAY_URL="https://your-gateway.gateway.bedrock-agentcore.us-west-2.amazonaws.com"
+cd examples/nodejs-client && npm install
+node session-history.js list   CUST-100005
+node session-history.js resume CUST-100005 session-1780951267383-7bm7iut
+```
+
+See [examples/nodejs-client/README.md](examples/nodejs-client/README.md#calling-session-history-mcp-tools) for the full walkthrough, including a programmatic-use snippet (`listSessions`, `getSessionHistory`, generic `callTool`) and the JSON shapes each tool returns.
+
 ### Prompt Management
 
 System prompts live in [`agent/prompts.md`](agent/prompts.md) and are uploaded to a DynamoDB table on deploy. The runtime polls the table every 60 seconds, so you can edit prompts and push updates **without rebuilding the agent container**:

@@ -8,6 +8,8 @@
 import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
+  ListSessionsCommand,
+  ListEventsCommand,
 } from "@aws-sdk/client-bedrock-agentcore";
 import {
   S3VectorsClient,
@@ -18,6 +20,10 @@ const REGION = process.env.AGENT_REGION || process.env.AWS_REGION || "us-west-2"
 const RUNTIME_ARN = process.env.RUNTIME_ARN;
 const VECTOR_BUCKET_NAME =
   process.env.VECTOR_BUCKET_NAME || "party-supply-vectors";
+// MEMORY_ID is the resolved AgentCore Memory id (e.g.
+// "PartySupply_PartySupplyMemory-abc1234567"). Needed for the
+// ListSessions / ListEvents calls the UI's history sidebar makes.
+const MEMORY_ID = process.env.MEMORY_ID;
 
 const client = new BedrockAgentCoreClient({ region: REGION });
 const s3vectors = new S3VectorsClient({ region: REGION });
@@ -50,6 +56,12 @@ export const handler = async (event, context) => {
   // - it doesn't go through the AgentCore runtime, so it's fast and cheap.
   if (event && event.action === "list_customers") {
     return await handleListCustomers(event);
+  }
+  if (event && event.action === "list_sessions") {
+    return await handleListSessions(event);
+  }
+  if (event && event.action === "get_session_history") {
+    return await handleGetSessionHistory(event);
   }
 
   console.log("Event:", JSON.stringify(event));
@@ -243,4 +255,225 @@ async function handleListCustomers(event) {
       error: error.message,
     };
   }
+}
+
+/**
+ * list_sessions tool handler.
+ *
+ * Lists chat sessions for a given actor within an optional time window.
+ * Backed entirely by AgentCore Memory's `ListSessions` + `ListEvents`
+ * APIs - no separate database. AgentCore Memory is the source of truth.
+ *
+ * Per-session "firstPrompt" is fetched via ListEvents(maxResults=1...)
+ * for each session in parallel. With the typical UI request of ~10-20
+ * sessions per window that's a small fan-out (~500ms total).
+ *
+ * Input:
+ *   {
+ *     action: "list_sessions",
+ *     actorId: "CUST-...",           // required
+ *     sinceMs: 1718380800000,        // optional, defaults to 48h ago
+ *     maxSessions: 20                // optional, defaults to 20
+ *   }
+ *
+ * Output:
+ *   {
+ *     sessions: [
+ *       {
+ *         sessionId: "...",
+ *         actorId: "...",
+ *         createdAt: 1718380800000,   // epoch ms
+ *         firstPrompt: "show me birthday party supplies"  // empty if no user event
+ *       }
+ *     ],
+ *     totalReturned: 5
+ *   }
+ */
+async function handleListSessions(event) {
+  if (!MEMORY_ID) {
+    return { sessions: [], totalReturned: 0, error: "MEMORY_ID env var not set" };
+  }
+  const actorId = event.actorId;
+  if (!actorId || actorId === "anonymous") {
+    return { sessions: [], totalReturned: 0 };
+  }
+
+  const FORTY_EIGHT_HOURS_MS = 48 * 60 * 60 * 1000;
+  const sinceMs = typeof event.sinceMs === "number"
+    ? event.sinceMs
+    : Date.now() - FORTY_EIGHT_HOURS_MS;
+  const maxSessions = Math.min(event.maxSessions || 20, 100);
+
+  try {
+    // Pool the actor's sessions. We can't filter by "recent activity" via
+    // ListSessions (it only returns createdAt) - a session created weeks
+    // ago can still receive fresh CreateEvent calls if the UI reuses the
+    // sessionId across reloads. So we collect a generous pool, then derive
+    // lastEventAt from ListEvents below.
+    const pool = [];
+    let nextToken;
+    let pages = 0;
+    const POOL_CAP = 100;
+
+    do {
+      const out = await client.send(
+        new ListSessionsCommand({
+          memoryId: MEMORY_ID,
+          actorId,
+          maxResults: 100,
+          ...(nextToken ? { nextToken } : {}),
+        })
+      );
+      const summaries = out.sessionSummaries || [];
+      for (const s of summaries) {
+        const createdMs = s.createdAt instanceof Date
+          ? s.createdAt.getTime()
+          : Number(s.createdAt) || 0;
+        pool.push({
+          sessionId: s.sessionId,
+          actorId: s.actorId,
+          createdAt: createdMs,
+        });
+      }
+      nextToken = out.nextToken;
+      pages++;
+      if (pool.length >= POOL_CAP || pages >= 5) break;
+    } while (nextToken);
+
+    // Fan out ListEvents to find both the first user prompt and the last
+    // event timestamp per session. We then filter by lastEventAt >= sinceMs
+    // and sort by lastEventAt desc - this is what users actually mean by
+    // "recent conversations" (sessions with recent activity, not sessions
+    // whose first turn was recent).
+    const enriched = await Promise.all(
+      pool.map(async (s) => {
+        try {
+          const ev = await client.send(
+            new ListEventsCommand({
+              memoryId: MEMORY_ID,
+              actorId,
+              sessionId: s.sessionId,
+              maxResults: 20,
+              includePayloads: true,
+            })
+          );
+          const events = (ev.events || []).slice().sort((a, b) => {
+            const at = a.eventTimestamp instanceof Date ? a.eventTimestamp.getTime() : Number(a.eventTimestamp) || 0;
+            const bt = b.eventTimestamp instanceof Date ? b.eventTimestamp.getTime() : Number(b.eventTimestamp) || 0;
+            return at - bt;
+          });
+          const firstUser = events.find((e) => extractRole(e) === "USER");
+          const firstPrompt = firstUser ? extractText(firstUser).slice(0, 200) : "";
+          const last = events[events.length - 1];
+          const lastEventAt = last
+            ? (last.eventTimestamp instanceof Date ? last.eventTimestamp.getTime() : Number(last.eventTimestamp) || 0)
+            : s.createdAt;
+          return { ...s, firstPrompt, lastEventAt };
+        } catch (err) {
+          console.warn("list_sessions: ListEvents failed for", s.sessionId, err.message);
+          return { ...s, firstPrompt: "", lastEventAt: s.createdAt };
+        }
+      })
+    );
+
+    const filtered = enriched
+      .filter((s) => s.lastEventAt >= sinceMs)
+      .sort((a, b) => b.lastEventAt - a.lastEventAt)
+      .slice(0, maxSessions);
+
+    return { sessions: filtered, totalReturned: filtered.length };
+  } catch (error) {
+    console.error("list_sessions error:", error.message);
+    return { sessions: [], totalReturned: 0, error: error.message };
+  }
+}
+
+/**
+ * get_session_history tool handler.
+ *
+ * Returns the full event timeline for a session so the UI can re-hydrate
+ * the chat when a user clicks an entry in the sidebar. Events are sorted
+ * oldest -> newest and mapped to the shape the UI's chat history expects.
+ *
+ * Input:
+ *   {
+ *     action: "get_session_history",
+ *     actorId: "CUST-...",
+ *     sessionId: "session-...",
+ *     maxResults: 100               // optional, defaults to 50
+ *   }
+ *
+ * Output:
+ *   {
+ *     messages: [{ role: "user"|"assistant", content: "...", timestamp: 123 }],
+ *     totalReturned: N
+ *   }
+ */
+async function handleGetSessionHistory(event) {
+  if (!MEMORY_ID) {
+    return { messages: [], totalReturned: 0, error: "MEMORY_ID env var not set" };
+  }
+  const { actorId, sessionId } = event;
+  if (!actorId || !sessionId) {
+    return { messages: [], totalReturned: 0, error: "actorId and sessionId required" };
+  }
+  const maxResults = Math.min(event.maxResults || 50, 100);
+
+  try {
+    const out = await client.send(
+      new ListEventsCommand({
+        memoryId: MEMORY_ID,
+        actorId,
+        sessionId,
+        maxResults,
+        includePayloads: true,
+      })
+    );
+    const events = (out.events || []).slice().sort((a, b) => {
+      const at = a.eventTimestamp instanceof Date ? a.eventTimestamp.getTime() : Number(a.eventTimestamp) || 0;
+      const bt = b.eventTimestamp instanceof Date ? b.eventTimestamp.getTime() : Number(b.eventTimestamp) || 0;
+      return at - bt;
+    });
+
+    const messages = events
+      .map((e) => {
+        const role = extractRole(e);
+        const content = extractText(e);
+        if (!role || !content) return null;
+        const ts = e.eventTimestamp instanceof Date ? e.eventTimestamp.getTime() : Number(e.eventTimestamp) || 0;
+        return {
+          role: role.toLowerCase(), // "USER" -> "user"
+          content,
+          timestamp: ts,
+        };
+      })
+      .filter(Boolean);
+
+    return { messages, totalReturned: messages.length };
+  } catch (error) {
+    console.error("get_session_history error:", error.message);
+    return { messages: [], totalReturned: 0, error: error.message };
+  }
+}
+
+/**
+ * Pull the role out of an AgentCore Memory event payload.
+ * Payload shape: payload[0].conversational.role = "USER" | "ASSISTANT"
+ */
+function extractRole(event) {
+  const first = (event.payload || [])[0];
+  return first?.conversational?.role || null;
+}
+
+/**
+ * Pull the text content out of an AgentCore Memory event payload.
+ * Payload shape: payload[0].conversational.content.text
+ */
+function extractText(event) {
+  const first = (event.payload || [])[0];
+  const content = first?.conversational?.content;
+  if (!content) return "";
+  if (typeof content === "string") return content;
+  if ("text" in content) return content.text || "";
+  return "";
 }

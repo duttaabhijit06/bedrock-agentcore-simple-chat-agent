@@ -545,6 +545,7 @@ step_agent() {
           \"Resource\": \"arn:aws:dynamodb:${REGION}:${ACCOUNT_ID}:table/${PROMPTS_TABLE_NAME}\"
         }]
       }" 2>/dev/null && echo "  Prompts table permissions added." || echo "  (could not update Prompts table permissions)"
+
   fi
 
   echo ""
@@ -638,6 +639,20 @@ step_lambda() {
   fi
   echo "  Runtime ARN: ${RUNTIME_ARN}"
 
+  # Fetch the AgentCore Memory id so the Lambda can read past sessions
+  # via ListSessions / ListEvents for the chat history sidebar. Returns
+  # empty if no memory exists yet (Lambda will return [] from those tools
+  # rather than failing). We grab the id whose name contains the project.
+  MEMORY_ID=$(aws bedrock-agentcore-control list-memories --region "${REGION}" \
+    --query "memories[?contains(id, 'PartySupply_PartySupplyMemory')].id | [0]" \
+    --output text 2>/dev/null || echo "")
+  if [ "$MEMORY_ID" = "None" ] || [ -z "$MEMORY_ID" ]; then
+    MEMORY_ID=""
+    echo "  Memory ID: (not found - session history sidebar will be empty)"
+  else
+    echo "  Memory ID: ${MEMORY_ID}"
+  fi
+
   # Create IAM role for Lambda
   echo "  Creating Lambda execution role..."
   TRUST_POLICY='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
@@ -672,6 +687,15 @@ step_lambda() {
     --role-name "${LAMBDA_ROLE_NAME}" \
     --policy-name "ListCustomersFromS3Vectors" \
     --policy-document "${CUSTOMERS_LIST_POLICY}" 2>/dev/null || true
+
+  # Memory read access for the chat history sidebar. ListSessions /
+  # ListEvents are scoped to the memory resource ARN; we use wildcard
+  # so the policy keeps working if the memory id rotates on redeploy.
+  MEMORY_HISTORY_POLICY="{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"bedrock-agentcore:ListSessions\",\"bedrock-agentcore:ListEvents\"],\"Resource\":\"arn:aws:bedrock-agentcore:${REGION}:${ACCOUNT_ID}:memory/*\"}]}"
+  aws iam put-role-policy \
+    --role-name "${LAMBDA_ROLE_NAME}" \
+    --policy-name "MemoryHistoryAccess" \
+    --policy-document "${MEMORY_HISTORY_POLICY}" 2>/dev/null || true
 
   ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${LAMBDA_ROLE_NAME}"
   echo "  Role ARN: ${ROLE_ARN}"
@@ -717,7 +741,7 @@ step_lambda() {
     aws lambda update-function-configuration \
       --function-name "${LAMBDA_NAME}" \
       --runtime "${LAMBDA_RUNTIME}" \
-      --environment "Variables={AGENT_REGION=${REGION},RUNTIME_ARN=${RUNTIME_ARN},VECTOR_BUCKET_NAME=${VECTOR_BUCKET_NAME}}" \
+      --environment "Variables={AGENT_REGION=${REGION},RUNTIME_ARN=${RUNTIME_ARN},VECTOR_BUCKET_NAME=${VECTOR_BUCKET_NAME},MEMORY_ID=${MEMORY_ID}}" \
       --timeout 120 \
       --region "${REGION}" > /dev/null 2>&1 || true
   else
@@ -729,7 +753,7 @@ step_lambda() {
       --zip-file "fileb://${LAMBDA_ZIP}" \
       --timeout 120 \
       --memory-size 256 \
-      --environment "Variables={AGENT_REGION=${REGION},RUNTIME_ARN=${RUNTIME_ARN},VECTOR_BUCKET_NAME=${VECTOR_BUCKET_NAME}}" \
+      --environment "Variables={AGENT_REGION=${REGION},RUNTIME_ARN=${RUNTIME_ARN},VECTOR_BUCKET_NAME=${VECTOR_BUCKET_NAME},MEMORY_ID=${MEMORY_ID}}" \
       --region "${REGION}" > /dev/null
   fi
 
@@ -1109,6 +1133,7 @@ step_clean() {
   echo "  Deleting Lambda role..."
   aws iam delete-role-policy --role-name "${LAMBDA_ROLE_NAME}" --policy-name "InvokeAgentCoreRuntime" 2>/dev/null || true
   aws iam delete-role-policy --role-name "${LAMBDA_ROLE_NAME}" --policy-name "ListCustomersFromS3Vectors" 2>/dev/null || true
+  aws iam delete-role-policy --role-name "${LAMBDA_ROLE_NAME}" --policy-name "MemoryHistoryAccess" 2>/dev/null || true
   aws iam detach-role-policy --role-name "${LAMBDA_ROLE_NAME}" --policy-arn "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole" 2>/dev/null || true
   aws iam delete-role --role-name "${LAMBDA_ROLE_NAME}" 2>/dev/null || echo "  (not found)"
 

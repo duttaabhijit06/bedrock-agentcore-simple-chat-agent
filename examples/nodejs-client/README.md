@@ -246,6 +246,82 @@ async function callAgent(prompt, credentials, gatewayUrl) {
 }
 ```
 
+## Calling Session-History MCP Tools
+
+In addition to `chat`, the gateway exposes two MCP tools for the conversation-history sidebar feature:
+
+| Tool | Purpose |
+|---|---|
+| `list_sessions` | List an actor's recent sessions with first-prompt previews. |
+| `get_session_history` | Fetch the full user/assistant timeline for a single session. |
+
+A second example script, [`session-history.js`](session-history.js), shows how to call both with the same SigV4 + JSON-RPC plumbing as the chat client.
+
+```bash
+# Set up env
+export AGENTCORE_GATEWAY_URL="https://your-gateway.gateway.bedrock-agentcore.us-west-2.amazonaws.com"
+export AWS_PROFILE="my-profile"          # optional - defaults to default chain
+export MCP_TARGET_PREFIX="PartySupplyTarget"  # optional - matches deploy.sh
+
+# List the actor's recent sessions (last 48h by default)
+node session-history.js list CUST-100005
+
+# Output:
+# • session-1780951267383-7bm7iut
+#     12m ago  —  show me birthday party supplies
+# • session-1782345670123-abc1234
+#     2h ago   —  Where's my order ORD-12345?
+#
+# 2 session(s).
+
+# Fetch the full timeline of a specific session
+node session-history.js resume CUST-100005 session-1780951267383-7bm7iut
+
+# Output:
+# 👤 USER  [2026-06-25T01:09:37.045Z]
+#   show me birthday party supplies
+#
+# 🤖 ASSISTANT  [2026-06-25T01:09:46.480Z]
+#   Great! Here are some awesome birthday party supplies...
+#
+# (4 message(s))
+```
+
+### Programmatic Use
+
+The script also exports its primitives so you can reuse them in your own code:
+
+```javascript
+const {
+  callTool,
+  listSessions,
+  getSessionHistory,
+} = require("./session-history");
+
+async function showRecentChats(actorId) {
+  // Window can be customized — pass sinceMs explicitly, or windowHours for
+  // human-readable lookback. Both feed the tool's sinceMs argument.
+  const { sessions } = await listSessions(actorId, { windowHours: 168 });
+
+  for (const s of sessions) {
+    const history = await getSessionHistory(actorId, s.sessionId, 50);
+    console.log(`Session ${s.sessionId} — ${history.messages.length} turns`);
+  }
+}
+```
+
+`callTool(toolName, args)` is generic — point it at any MCP tool the gateway target exposes and it'll handle signing, JSON-RPC framing, and result parsing for you.
+
+### What the tools return
+
+`list_sessions` → `{ sessions: [{sessionId, actorId, createdAt, lastEventAt, firstPrompt}], totalReturned }`. Filter/sort happens server-side based on `lastEventAt` (so reused sessionIds with fresh events still surface). See [lambda/tools.json](../../lambda/tools.json) for the full output schema.
+
+`get_session_history` → `{ messages: [{role, content, timestamp}], totalReturned }`, oldest-first. Only conversational text is recoverable — product cards and chip envelopes are not persisted in AgentCore Memory.
+
+### Required IAM
+
+The caller's principal needs `bedrock-agentcore:InvokeAgent`-style permission on the gateway (same as the `chat` tool). The Lambda fronting the tools handles the `bedrock-agentcore:ListSessions` / `ListEvents` calls itself via its execution role — `./scripts/deploy.sh --lambda` wires the `MemoryHistoryAccess` policy automatically.
+
 ## Troubleshooting
 
 ### "AGENTCORE_GATEWAY_URL environment variable is required"

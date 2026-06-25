@@ -119,6 +119,9 @@ aws iam delete-role-policy \
 aws iam delete-role-policy \
   --role-name "${LAMBDA_ROLE_NAME}" \
   --policy-name "ListCustomersFromS3Vectors" 2>/dev/null || true
+aws iam delete-role-policy \
+  --role-name "${LAMBDA_ROLE_NAME}" \
+  --policy-name "MemoryHistoryAccess" 2>/dev/null || true
 aws iam detach-role-policy \
   --role-name "${LAMBDA_ROLE_NAME}" \
   --policy-arn "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole" 2>/dev/null || true

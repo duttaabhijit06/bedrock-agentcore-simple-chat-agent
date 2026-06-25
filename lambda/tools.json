@@ -90,5 +90,87 @@
         "totalReturned": { "type": "number" }
       }
     }
+  },
+  {
+    "name": "list_sessions",
+    "description": "List recent chat sessions for an actor by querying AgentCore Memory. Returns one entry per session with the actor's first prompt, suitable for a 'recent conversations' sidebar.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "Must be the literal string 'list_sessions' (Lambda dispatch). Value constraint enforced at Lambda layer."
+        },
+        "actorId": {
+          "type": "string",
+          "description": "The customer / user identifier whose sessions to list (e.g. CUST-100042)"
+        },
+        "sinceMs": {
+          "type": "number",
+          "description": "Optional. Epoch ms lower bound for the session's most recent event (not createdAt) — a reused sessionId with fresh activity will still match. Defaults to 48 hours ago."
+        },
+        "maxSessions": {
+          "type": "number",
+          "description": "Optional. Max sessions to return after filtering (default 20, hard cap 100)."
+        }
+      },
+      "required": ["action", "actorId"]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "sessions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sessionId": { "type": "string" },
+              "actorId": { "type": "string" },
+              "createdAt": { "type": "number" },
+              "lastEventAt": { "type": "number" },
+              "firstPrompt": { "type": "string" }
+            }
+          }
+        },
+        "totalReturned": { "type": "number" }
+      }
+    }
+  },
+  {
+    "name": "get_session_history",
+    "description": "Fetch the user/assistant message timeline for a specific session, used by the UI when a customer clicks a past conversation to resume it. Backed by AgentCore Memory ListEvents.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "Must be the literal string 'get_session_history' (Lambda dispatch). Value constraint enforced at Lambda layer."
+        },
+        "actorId": { "type": "string", "description": "The customer / user identifier" },
+        "sessionId": { "type": "string", "description": "The session whose events to return" },
+        "maxResults": {
+          "type": "number",
+          "description": "Optional. Max events to return (default 50, hard cap 100)."
+        }
+      },
+      "required": ["action", "actorId", "sessionId"]
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "messages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "role": { "type": "string", "description": "user or assistant" },
+              "content": { "type": "string" },
+              "timestamp": { "type": "number", "description": "Epoch ms" }
+            }
+          }
+        },
+        "totalReturned": { "type": "number" }
+      }
+    }
   }
 ]

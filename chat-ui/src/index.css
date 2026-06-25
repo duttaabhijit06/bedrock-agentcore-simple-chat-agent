@@ -28,11 +28,20 @@ body {
 }
 
 .app {
-  max-width: 800px;
+  max-width: 1100px; /* widened from 800px to fit the session history sidebar */
   margin: 0 auto;
   height: 100vh;
   display: flex;
   flex-direction: column;
+}
+
+/* Two-column shell: sidebar (recent sessions) | chat-window */
+.chat-shell {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+  min-height: 0; /* allow inner overflow:auto to work */
 }
 
 .app-header {
@@ -59,6 +68,10 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* Without this, flex children default to min-width: auto which equals
+     their min-content - the toolbar's intrinsic width then pushes the
+     chat panel past .app's max-width. */
+  min-width: 0;
 }
 
 .messages {
@@ -73,8 +86,15 @@ body {
 .message {
   display: flex;
   gap: 0.5rem;
-  max-width: 80%;
+  /* Fill the chat panel - the right edge of bubbles lines up with the
+     right edge of the New chat button in the toolbar above. */
+  max-width: 100%;
   animation: fadeIn 0.2s ease;
+}
+
+.message-content {
+  flex: 1;
+  min-width: 0; /* let long text wrap inside the bubble instead of stretching it */
 }
 
 @keyframes fadeIn {
@@ -383,6 +403,149 @@ body {
   background: #ffe5e5;
 }
 
+/* Session history sidebar (recent 48h conversations) */
+.session-history {
+  width: 260px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: #fbfaff;
+  border-right: 1px solid var(--border);
+  font-size: 0.85rem;
+  overflow: hidden;
+}
+
+.sh-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  background: #fff;
+}
+
+.sh-title {
+  font-weight: 600;
+  color: var(--text);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sh-refresh {
+  background: none;
+  border: none;
+  font-size: 1rem;
+  color: var(--text-light);
+  cursor: pointer;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-family: inherit;
+}
+
+.sh-refresh:hover {
+  background: var(--bg);
+  color: var(--primary);
+}
+
+.sh-empty,
+.sh-status {
+  padding: 1rem 0.75rem;
+  color: var(--text-light);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.sh-status.sh-error {
+  color: #c92a2a;
+}
+
+.sh-status button {
+  margin-left: 0.4rem;
+  padding: 0.2rem 0.55rem;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.sh-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.sh-row {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0.55rem 0.75rem;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-family: inherit;
+  border-bottom: 1px solid #f0edff;
+  transition: background 0.15s;
+}
+
+.sh-row:hover:not(:disabled) {
+  background: #f3f0ff;
+}
+
+.sh-row:disabled {
+  cursor: default;
+  opacity: 0.85;
+}
+
+.sh-row-active {
+  background: #ece6ff;
+}
+
+.sh-row-prompt {
+  font-size: 0.82rem;
+  color: var(--text);
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.sh-row-meta {
+  display: flex;
+  gap: 0.4rem;
+  font-size: 0.7rem;
+  color: var(--text-light);
+}
+
+.sh-row-active-tag {
+  background: var(--primary);
+  color: #fff;
+  padding: 0.05rem 0.4rem;
+  border-radius: 6px;
+  font-size: 0.65rem;
+}
+
+.sh-row-loading-tag {
+  color: var(--primary);
+  font-style: italic;
+}
+
+/* Hide the sidebar on narrow screens; chat stays full-width on mobile */
+@media (max-width: 720px) {
+  .session-history {
+    display: none;
+  }
+}
+
 /* Customer selector + chat toolbar */
 .chat-toolbar {
   display: flex;
@@ -392,10 +555,66 @@ body {
   border-bottom: 1px solid var(--border);
   background: #fafafa;
   font-size: 0.85rem;
+  min-width: 0; /* allow inner items to ellipsis rather than grow the bar */
+}
+
+/* Keep the new-chat button at its natural size; let the customer selector
+   shrink first so the toolbar doesn't widen its container. */
+.chat-toolbar .customer-selector {
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.chat-toolbar .customer-selector-button {
+  max-width: 260px;
+}
+
+.chat-toolbar .cs-selected-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-toolbar .new-chat-button {
+  flex-shrink: 0;
+}
+
+.new-chat-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.7rem;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 500;
+  font-family: inherit;
+  transition: background 0.15s, transform 0.1s;
+}
+
+.new-chat-button:hover {
+  background: var(--primary-light);
+}
+
+.new-chat-button:active {
+  transform: scale(0.97);
+}
+
+.new-chat-icon {
+  font-size: 1rem;
+  line-height: 1;
+  font-weight: 600;
 }
 
 .chat-toolbar-context {
   color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-toolbar-context strong {
@@ -876,9 +1095,5 @@ body {
 
   .app-header h1 {
     font-size: 1.25rem;
-  }
-
-  .message {
-    max-width: 92%;
   }
 }

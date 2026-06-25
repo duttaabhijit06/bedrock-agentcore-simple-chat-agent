@@ -1,6 +1,13 @@
 import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
-import { signRequest, getCredentials, setCredentials, clearCredentials } from "../lib/sigv4";
+import {
+  signRequest,
+  getCredentials,
+  setCredentials,
+  clearCredentials,
+  areCredentialsExpired,
+  isAuthError,
+} from "../lib/sigv4";
 import {
   ChatResponse,
   ChatResponseType,
@@ -9,6 +16,7 @@ import {
   parseEnvelope,
 } from "../types/response-envelope";
 import { CustomerSelector, Customer } from "./CustomerSelector";
+import { SessionHistory, SessionMessage } from "./SessionHistory";
 
 const SELECTED_CUSTOMER_KEY = "chat_selected_customer";
 
@@ -55,7 +63,11 @@ function getOrCreateSessionId(): string {
 }
 
 export function ChatWindow() {
-  const [sessionId] = useState(() => getOrCreateSessionId());
+  // sessionId is stateful (not just `useState(() => ...)` without a setter)
+  // because the "Resume past conversation" sidebar swaps it when the user
+  // clicks a previous session. Keeping it in sessionStorage means a page
+  // reload still lands you in the same active thread.
+  const [sessionId, setSessionId] = useState(() => getOrCreateSessionId());
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "welcome",
@@ -68,11 +80,14 @@ export function ChatWindow() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [activity, setActivity] = useState<string[]>([]);
-  const [showCredentials, setShowCredentials] = useState(!getCredentials());
+  const [showCredentials, setShowCredentials] = useState(
+    !getCredentials() || areCredentialsExpired()
+  );
   const [credForm, setCredForm] = useState({
     accessKeyId: "",
     secretAccessKey: "",
     sessionToken: "",
+    expiresAt: "",
   });
   // Per-message chip selections: { messageId -> { questionId -> Set<value> } }
   const [chipSelections, setChipSelections] = useState<
@@ -80,6 +95,10 @@ export function ChatWindow() {
   >({});
   // Track which messages have had their followup chips submitted (hide after submit)
   const [submittedFollowups, setSubmittedFollowups] = useState<Set<string>>(new Set());
+  // Bumped to trigger a one-shot SessionHistory reload (e.g. after the
+  // user clicks "New chat" or sends a message). The sidebar listens on
+  // this value via its `refreshKey` prop.
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
   // Selected customer for personalization. The agent loads this user's
   // profile and last 10 interactions into the system prompt for every
   // chat call when set. Persisted in sessionStorage so the choice
@@ -93,17 +112,26 @@ export function ChatWindow() {
     } else {
       sessionStorage.removeItem(SELECTED_CUSTOMER_KEY);
     }
-    // Append a system message announcing the change so the customer can
-    // see in chat history when their identity switched.
-    const systemMessage: Message = {
-      id: `cs-${Date.now()}`,
-      role: "system",
-      content: c
-        ? `Now chatting as **${c.userId}**${c.customerSegment ? ` (${c.customerSegment})` : ""}. Profile and recent interactions will be used to personalize responses.`
-        : "Customer cleared. No personalization context will be used.",
+    // Switching customers starts a fresh thread end-to-end: new sessionId,
+    // cleared messages, cleared chip/followup state. Otherwise the previous
+    // customer's turns linger on screen and chat-history submitted with the
+    // next send still carries the prior actor's conversation.
+    const freshSessionId = `session-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    setSessionId(freshSessionId);
+    sessionStorage.setItem("chat_session_id", freshSessionId);
+
+    const welcome: Message = {
+      id: "welcome",
+      role: "assistant",
+      content:
+        "Hi there! 🎉 I'm your Party Supply Assistant. I can help you find products for any celebration, check order status, or suggest party themes. What can I help you with today?",
       timestamp: new Date(),
     };
-    setMessages((prev) => [...prev, systemMessage]);
+    setMessages([welcome]);
+    setChipSelections({});
+    setSubmittedFollowups(new Set());
+    setActivity([]);
+    setInput("");
   }
   const [copied, setCopied] = useState(false);
 
@@ -119,15 +147,88 @@ export function ChatWindow() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, activity]);
 
+  // Poll every 60s for credential expiry. Temporary STS creds typically
+  // last 1 hour, so a minute of granularity is plenty and avoids waiting
+  // until the next chat send to surface the expiry.
+  useEffect(() => {
+    if (showCredentials) return;
+    const id = setInterval(() => {
+      if (areCredentialsExpired()) {
+        clearCredentials();
+        setShowCredentials(true);
+      }
+    }, 60_000);
+    return () => clearInterval(id);
+  }, [showCredentials]);
+
+  function startNewChat() {
+    const freshSessionId = `session-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    setSessionId(freshSessionId);
+    sessionStorage.setItem("chat_session_id", freshSessionId);
+    setMessages([
+      {
+        id: "welcome",
+        role: "assistant",
+        content:
+          "Hi there! 🎉 I'm your Party Supply Assistant. I can help you find products for any celebration, check order status, or suggest party themes. What can I help you with today?",
+        timestamp: new Date(),
+      },
+    ]);
+    setChipSelections({});
+    setSubmittedFollowups(new Set());
+    setActivity([]);
+    setInput("");
+    // Bump the sidebar so it picks up any session that just got created
+    // by the previous turn (and to make the previous "current" highlight
+    // drop off now that we've switched threads).
+    setHistoryRefreshKey((k) => k + 1);
+  }
+
   const handleCredentialSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setCredentials(
       credForm.accessKeyId,
       credForm.secretAccessKey,
-      credForm.sessionToken || undefined
+      credForm.sessionToken || undefined,
+      credForm.expiresAt || undefined
     );
     setShowCredentials(false);
   };
+
+  /**
+   * Re-hydrate the chat from a past session.
+   *
+   * Called when the user clicks an entry in the SessionHistory sidebar.
+   * Replaces the current messages with the past timeline (rendered as
+   * plain user/assistant bubbles - no product cards or chips because
+   * those are envelope-specific and were thrown away by AgentCore Memory),
+   * and switches the active sessionId so new turns continue that thread.
+   */
+  function handleResumeSession(newSessionId: string, history: SessionMessage[]) {
+    setSessionId(newSessionId);
+    sessionStorage.setItem("chat_session_id", newSessionId);
+
+    // Convert AgentCore Memory events into Message objects. Cards and
+    // chip state aren't recoverable - past sessions show prose only.
+    const restored: Message[] = history.map((h, idx) => ({
+      id: `restored-${newSessionId}-${idx}`,
+      role: h.role,
+      content: h.content,
+      responseType: h.role === "assistant" ? "answer" : undefined,
+      timestamp: new Date(h.timestamp || Date.now()),
+    }));
+
+    // Banner so the user can see they're back in a past thread.
+    const banner: Message = {
+      id: `resume-banner-${Date.now()}`,
+      role: "system",
+      content: `Resumed past conversation (${history.length} messages). New messages will continue this thread.`,
+      timestamp: new Date(),
+    };
+    setMessages([banner, ...restored]);
+    setChipSelections({});
+    setSubmittedFollowups(new Set());
+  }
 
   const handleSend = async (overrideMessage?: string) => {
     // overrideMessage is supplied when the user clicks Submit on a followup
@@ -136,7 +237,8 @@ export function ChatWindow() {
     if (!messageText || isLoading) return;
 
     const credentials = getCredentials();
-    if (!credentials) {
+    if (!credentials || areCredentialsExpired()) {
+      clearCredentials();
       setShowCredentials(true);
       return;
     }
@@ -270,7 +372,19 @@ export function ChatWindow() {
       // Brief delay to show activity before clearing
       await new Promise((r) => setTimeout(r, 800));
       setMessages((prev) => [...prev, assistantMessage]);
+      // First turn on a fresh sessionId just created an AgentCore Memory
+      // session - nudge the sidebar so it appears without waiting for
+      // the 30s background poll.
+      setHistoryRefreshKey((k) => k + 1);
     } catch (error) {
+      // SigV4 / STS auth failures route the user back to the credentials
+      // screen rather than surfacing as a wall of "Gateway error (403)" -
+      // most of the time the cause is just an expired session token.
+      if (isAuthError(error)) {
+        clearCredentials();
+        setShowCredentials(true);
+        return;
+      }
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "system",
@@ -387,6 +501,17 @@ export function ChatWindow() {
               placeholder="Required for temporary credentials"
             />
           </label>
+          <label>
+            Expires At (optional)
+            <input
+              type="text"
+              value={credForm.expiresAt}
+              onChange={(e) =>
+                setCredForm({ ...credForm, expiresAt: e.target.value })
+              }
+              placeholder="e.g. 2026-06-25T03:30:00Z"
+            />
+          </label>
           <button type="submit">Connect</button>
         </form>
       </div>
@@ -394,7 +519,14 @@ export function ChatWindow() {
   }
 
   return (
-    <div className="chat-window">
+    <div className="chat-shell">
+      <SessionHistory
+        actorId={selectedCustomer?.userId || null}
+        currentSessionId={sessionId}
+        onResume={handleResumeSession}
+        refreshKey={historyRefreshKey}
+      />
+      <div className="chat-window">
       <div className="chat-toolbar">
         {selectedCustomer && (
           <div className="chat-toolbar-context">
@@ -405,6 +537,16 @@ export function ChatWindow() {
         )}
         <div className="chat-toolbar-spacer" />
         <CustomerSelector selected={selectedCustomer} onChange={handleCustomerChange} />
+        <button
+          type="button"
+          className="new-chat-button"
+          onClick={startNewChat}
+          title="Start a new conversation"
+          aria-label="Start a new conversation"
+        >
+          <span className="new-chat-icon">+</span>
+          New chat
+        </button>
       </div>
       <div className="messages">
         {messages.map((msg) => (
@@ -597,6 +739,7 @@ export function ChatWindow() {
           🔓 Change Credentials
         </button>
       </div>
+      </div>{/* /chat-window */}
     </div>
   );
 }

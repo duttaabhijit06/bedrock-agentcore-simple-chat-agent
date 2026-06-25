@@ -16,7 +16,9 @@
  *   MCP_TARGET_PREFIX       - gateway target name (default "PartySupplyTarget")
  *
  * Required IAM (attach to the Lambda execution role):
- *   - bedrock-agentcore:InvokeAgent       (on the gateway ARN, scoped down in prod)
+ *   - bedrock-agentcore:InvokeGateway     (authorizes the SigV4-signed
+ *                                          POST /mcp call; scope to the
+ *                                          specific gateway ARN in prod)
  *   - logs:CreateLogStream / PutLogEvents (Lambda basic execution)
  *
  * No npm install needed: @aws-sdk/* and @smithy/* modules are part of the

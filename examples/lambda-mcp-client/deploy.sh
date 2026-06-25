@@ -31,7 +31,10 @@ RUNTIME="nodejs24.x"
 HANDLER="index.handler"
 TIMEOUT="${TIMEOUT:-60}"
 MEMORY="${MEMORY:-256}"
-ZIP_PATH="/tmp/${LAMBDA_NAME}.zip"
+# Keep the zip in CWD (a relative path) rather than /tmp - on Windows the
+# AWS CLI is a native binary and won't resolve POSIX /tmp paths emitted
+# by Git Bash. The main scripts/deploy.sh uses the same trick.
+ZIP_PATH="./${LAMBDA_NAME}.zip"
 TARGET_PREFIX="${MCP_TARGET_PREFIX:-PartySupplyTarget}"
 
 cd "$(dirname "$0")"
@@ -83,10 +86,13 @@ aws iam attach-role-policy \
   --role-name "${ROLE_NAME}" \
   --policy-arn "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole" 2>/dev/null || true
 
-# Inline policy: allow invoking the AgentCore gateway. In production scope
-# Resource down to the specific gateway ARN; we use "*" here to keep the
-# example portable across gateway deletions/recreates.
-GW_POLICY="{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"bedrock-agentcore:InvokeAgent\",\"bedrock-agentcore:InvokeAgentRuntime\"],\"Resource\":\"*\"}]}"
+# Inline policy: allow invoking the AgentCore gateway. The action that
+# actually authorizes POST /mcp is `bedrock-agentcore:InvokeGateway` -
+# this is what the gateway checks against the SigV4-signed caller's
+# principal. In production scope Resource down to the specific gateway
+# ARN; we use "*" here to keep the example portable across gateway
+# deletions/recreates.
+GW_POLICY="{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"bedrock-agentcore:InvokeGateway\",\"bedrock-agentcore:InvokeAgentRuntime\"],\"Resource\":\"*\"}]}"
 aws iam put-role-policy \
   --role-name "${ROLE_NAME}" \
   --policy-name "InvokeAgentCoreGateway" \
@@ -102,12 +108,32 @@ echo "[3/5] Installing deps + packaging Lambda..."
 npm install --silent --no-fund --no-audit
 
 rm -f "${ZIP_PATH}"
+
+# Cross-platform zipping (same trick the main scripts/deploy.sh uses):
+# on Windows, `zip` is commonly a 7-Zip alias which uses different flags.
+# Detect by running it with no args - Info-ZIP and 7-Zip print distinct
+# banners.
+ZIP_IS_7Z=false
 if command -v zip >/dev/null 2>&1; then
+  if zip 2>&1 | head -3 | grep -qi "7-zip"; then
+    ZIP_IS_7Z=true
+  fi
+fi
+
+if command -v zip >/dev/null 2>&1 && [ "$ZIP_IS_7Z" = false ]; then
   zip -qr "${ZIP_PATH}" index.mjs package.json node_modules
+elif [ "$ZIP_IS_7Z" = true ]; then
+  zip a -tzip "${ZIP_PATH}" index.mjs package.json node_modules >/dev/null 2>&1
 elif command -v 7z >/dev/null 2>&1; then
-  7z a -tzip "${ZIP_PATH}" index.mjs package.json node_modules >/dev/null
+  7z a -tzip "${ZIP_PATH}" index.mjs package.json node_modules >/dev/null 2>&1
+elif [ -f "/c/Program Files/7-Zip/7z.exe" ]; then
+  "/c/Program Files/7-Zip/7z.exe" a -tzip "${ZIP_PATH}" index.mjs package.json node_modules >/dev/null 2>&1
+elif [ -f "/c/Program Files (x86)/7-Zip/7z.exe" ]; then
+  "/c/Program Files (x86)/7-Zip/7z.exe" a -tzip "${ZIP_PATH}" index.mjs package.json node_modules >/dev/null 2>&1
 else
-  echo "❌ Neither 'zip' nor '7z' is available. Install one and re-run."
+  echo "❌ Neither zip nor 7z found."
+  echo "   On Windows install 7-Zip (choco install 7zip)."
+  echo "   On macOS/Linux install zip via your package manager."
   exit 1
 fi
 echo "  Package: ${ZIP_PATH} ($(du -h "${ZIP_PATH}" | cut -f1))"
@@ -150,6 +176,12 @@ fi
 LAMBDA_ARN=$(aws lambda get-function --function-name "${LAMBDA_NAME}" --region "${REGION}" \
   --query "Configuration.FunctionArn" --output text)
 echo "  Lambda ARN: ${LAMBDA_ARN}"
+
+# Lambda is uploaded and live now; remove the interim zip so re-runs of
+# the script see a clean working directory (and so it doesn't get
+# committed by mistake - it's gitignored, but belt + suspenders).
+rm -f "${ZIP_PATH}"
+echo "  Cleaned up local zip: ${ZIP_PATH}"
 
 # ─── Step 5: Print quick-test commands ──────────────────────────────────────
 echo "[5/5] Done. Try it out:"

@@ -125,7 +125,7 @@ Returns `{ messages: [{role, content, timestamp}], totalReturned }` oldest-first
 The deploy script creates an execution role with:
 
 - `AWSLambdaBasicExecutionRole` (managed) — CloudWatch Logs.
-- `InvokeAgentCoreGateway` (inline) — `bedrock-agentcore:InvokeAgent` and `:InvokeAgentRuntime` on `Resource: "*"`.
+- `InvokeAgentCoreGateway` (inline) — `bedrock-agentcore:InvokeGateway` (authorizes the SigV4-signed `POST /mcp` call) and `:InvokeAgentRuntime` on `Resource: "*"`.
 
 In production, scope the inline policy down to the specific gateway ARN. The example keeps it as `"*"` so the function still works after `./scripts/deploy.sh --clean` recreates the gateway with a new ID.
 
@@ -177,7 +177,7 @@ That's the entire integration surface — Lambda runtime ships `@aws-sdk/*` and 
 
 **"AGENTCORE_GATEWAY_URL env var is required"** — Lambda env var didn't get set. Re-run `deploy.sh` (it auto-populates this from your gateway) or set it manually via `aws lambda update-function-configuration --environment ...`.
 
-**`AccessDeniedException` on `InvokeAgent` / `InvokeAgentRuntime`** — execution role is missing the `bedrock-agentcore:InvokeAgent` permission. Verify with `aws iam list-role-policies --role-name agentcore-lambda-example-role`.
+**`Authorization error - Insufficient permissions` from the gateway** — execution role is missing `bedrock-agentcore:InvokeGateway`. Verify with `aws iam list-role-policies --role-name agentcore-lambda-example-role` then `aws iam get-role-policy ... --policy-name InvokeAgentCoreGateway`.
 
 **`Internal server error` from the gateway** — most often a stale gateway target. Re-run `./scripts/deploy.sh --gateway-target` from the repo root to refresh the tool schema.
 

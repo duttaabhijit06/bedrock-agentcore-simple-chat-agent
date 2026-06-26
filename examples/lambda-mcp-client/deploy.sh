@@ -36,6 +36,10 @@ MEMORY="${MEMORY:-256}"
 # by Git Bash. The main scripts/deploy.sh uses the same trick.
 ZIP_PATH="./${LAMBDA_NAME}.zip"
 TARGET_PREFIX="${MCP_TARGET_PREFIX:-PartySupplyTarget}"
+API_NAME="${API_NAME:-agentcore-lambda-example-api}"
+API_STAGE="${API_STAGE:-prod}"
+# Set DEPLOY_API=0 to skip the API Gateway step (Lambda-only deploy).
+DEPLOY_API="${DEPLOY_API:-1}"
 
 cd "$(dirname "$0")"
 
@@ -183,26 +187,154 @@ echo "  Lambda ARN: ${LAMBDA_ARN}"
 rm -f "${ZIP_PATH}"
 echo "  Cleaned up local zip: ${ZIP_PATH}"
 
-# ─── Step 5: Print quick-test commands ──────────────────────────────────────
-echo "[5/5] Done. Try it out:"
+# ─── Step 5: API Gateway HTTP API (v2) ──────────────────────────────────────
+# Exposes the Lambda over `POST /mcp` with AWS_IAM authorization, so
+# callers SigV4-sign against service=execute-api and the API GW checks
+# whether their principal has execute-api:Invoke on the route ARN.
+#
+# Why v2 (HTTP API) instead of v1 (REST API):
+#   - Cheaper ($1/M calls vs $3.50/M)
+#   - Built-in Lambda proxy integration
+#   - AWS_IAM authorizer is a single flag (not an authorizer resource)
+INVOKE_URL=""
+if [ "${DEPLOY_API}" = "1" ]; then
+  echo "[5/6] Provisioning API Gateway HTTP API: ${API_NAME}..."
+
+  # Find or create the API. Names are not unique; we match on the name we
+  # set so re-running this script doesn't keep stacking new APIs.
+  API_ID=$(aws apigatewayv2 get-apis --region "${REGION}" \
+    --query "Items[?Name=='${API_NAME}'].ApiId | [0]" --output text 2>/dev/null || echo "None")
+
+  if [ -z "${API_ID}" ] || [ "${API_ID}" = "None" ]; then
+    API_ID=$(aws apigatewayv2 create-api \
+      --name "${API_NAME}" \
+      --protocol-type HTTP \
+      --description "AgentCore Lambda MCP client example - IAM-authenticated" \
+      --region "${REGION}" \
+      --query "ApiId" --output text)
+    echo "  API created: ${API_ID}"
+  else
+    echo "  API exists: ${API_ID}"
+  fi
+
+  # Integration to the Lambda. apigatewayv2_integrate via AWS_PROXY uses
+  # Lambda proxy format (event has requestContext.http, body is JSON
+  # string, response must be {statusCode, headers, body}).
+  INTEGRATION_ID=$(aws apigatewayv2 get-integrations --api-id "${API_ID}" --region "${REGION}" \
+    --query "Items[?IntegrationUri=='${LAMBDA_ARN}'].IntegrationId | [0]" --output text 2>/dev/null || echo "None")
+  if [ -z "${INTEGRATION_ID}" ] || [ "${INTEGRATION_ID}" = "None" ]; then
+    INTEGRATION_ID=$(aws apigatewayv2 create-integration \
+      --api-id "${API_ID}" \
+      --integration-type AWS_PROXY \
+      --integration-uri "${LAMBDA_ARN}" \
+      --payload-format-version "2.0" \
+      --region "${REGION}" \
+      --query "IntegrationId" --output text)
+    echo "  Integration created: ${INTEGRATION_ID}"
+  else
+    echo "  Integration exists: ${INTEGRATION_ID}"
+  fi
+
+  # Route: POST /mcp with AWS_IAM auth. We delete-and-recreate when the
+  # route exists to make AuthorizationType changes idempotent.
+  ROUTE_ID=$(aws apigatewayv2 get-routes --api-id "${API_ID}" --region "${REGION}" \
+    --query "Items[?RouteKey=='POST /mcp'].RouteId | [0]" --output text 2>/dev/null || echo "None")
+  if [ -z "${ROUTE_ID}" ] || [ "${ROUTE_ID}" = "None" ]; then
+    ROUTE_ID=$(aws apigatewayv2 create-route \
+      --api-id "${API_ID}" \
+      --route-key "POST /mcp" \
+      --target "integrations/${INTEGRATION_ID}" \
+      --authorization-type AWS_IAM \
+      --region "${REGION}" \
+      --query "RouteId" --output text)
+    echo "  Route created: POST /mcp (AWS_IAM auth)"
+  else
+    aws apigatewayv2 update-route \
+      --api-id "${API_ID}" \
+      --route-id "${ROUTE_ID}" \
+      --target "integrations/${INTEGRATION_ID}" \
+      --authorization-type AWS_IAM \
+      --region "${REGION}" >/dev/null
+    echo "  Route updated: POST /mcp (AWS_IAM auth)"
+  fi
+
+  # Auto-deploy stage so changes go live immediately. AutoDeploy=true is
+  # idempotent - safe to re-apply.
+  STAGE_EXISTS=$(aws apigatewayv2 get-stages --api-id "${API_ID}" --region "${REGION}" \
+    --query "Items[?StageName=='${API_STAGE}'].StageName | [0]" --output text 2>/dev/null || echo "None")
+  if [ -z "${STAGE_EXISTS}" ] || [ "${STAGE_EXISTS}" = "None" ]; then
+    aws apigatewayv2 create-stage \
+      --api-id "${API_ID}" \
+      --stage-name "${API_STAGE}" \
+      --auto-deploy \
+      --region "${REGION}" >/dev/null
+    echo "  Stage created: ${API_STAGE} (auto-deploy)"
+  else
+    aws apigatewayv2 update-stage \
+      --api-id "${API_ID}" \
+      --stage-name "${API_STAGE}" \
+      --auto-deploy \
+      --region "${REGION}" >/dev/null
+    echo "  Stage updated: ${API_STAGE} (auto-deploy)"
+  fi
+
+  # Grant API Gateway permission to invoke the Lambda. add-permission is
+  # not idempotent (errors if the statement-id already exists) so we
+  # swallow that case.
+  ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+  SOURCE_ARN="arn:aws:execute-api:${REGION}:${ACCOUNT_ID}:${API_ID}/*/*/mcp"
+  aws lambda add-permission \
+    --function-name "${LAMBDA_NAME}" \
+    --statement-id "apigw-invoke-mcp" \
+    --action lambda:InvokeFunction \
+    --principal apigateway.amazonaws.com \
+    --source-arn "${SOURCE_ARN}" \
+    --region "${REGION}" 2>/dev/null \
+    && echo "  Lambda invoke permission granted to API Gateway." \
+    || echo "  (invoke permission already exists)"
+
+  INVOKE_URL="https://${API_ID}.execute-api.${REGION}.amazonaws.com/${API_STAGE}/mcp"
+  echo "  Invoke URL: ${INVOKE_URL}"
+else
+  echo "[5/6] Skipping API Gateway (DEPLOY_API=0)."
+fi
+
+# ─── Step 6: Print quick-test commands ──────────────────────────────────────
+echo "[6/6] Done. Try it out:"
 cat <<EOF
+
+  # ── Direct Lambda invoke (always available) ──────────────────────────
 
   # Chat
   aws lambda invoke --function-name ${LAMBDA_NAME} --region ${REGION} \\
     --cli-binary-format raw-in-base64-out \\
     --payload '{"action":"chat","prompt":"Show me birthday party supplies","actorId":"CUST-100005"}' \\
-    /tmp/chat.json && cat /tmp/chat.json
+    ./chat.json && cat ./chat.json
 
   # List recent sessions (48h)
   aws lambda invoke --function-name ${LAMBDA_NAME} --region ${REGION} \\
     --cli-binary-format raw-in-base64-out \\
     --payload '{"action":"list_sessions","actorId":"CUST-100005"}' \\
-    /tmp/sessions.json && cat /tmp/sessions.json
+    ./sessions.json && cat ./sessions.json
 
   # Get full timeline of a specific session
   aws lambda invoke --function-name ${LAMBDA_NAME} --region ${REGION} \\
     --cli-binary-format raw-in-base64-out \\
     --payload '{"action":"get_session_history","actorId":"CUST-100005","sessionId":"<session-id>"}' \\
-    /tmp/history.json && cat /tmp/history.json
+    ./history.json && cat ./history.json
+EOF
+
+if [ -n "${INVOKE_URL}" ]; then
+  cat <<EOF
+
+  # ── HTTP API (SigV4 signed against service=execute-api) ──────────────
+  # Quick curl test using awscurl (pip install awscurl):
+  awscurl --service execute-api --region ${REGION} -X POST \\
+    -d '{"action":"list_sessions","actorId":"CUST-100005"}' \\
+    ${INVOKE_URL}
+
+  # Or use the bundled Node client:
+  AGENTCORE_HTTP_API_URL=${INVOKE_URL} node http-client.mjs list_sessions CUST-100005
 
 EOF
+fi

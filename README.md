@@ -57,6 +57,44 @@ Behavior summary:
 - **`lastEventAt` filtering** — `list_sessions` derives `lastEventAt` from per-session `ListEvents`, then filters by `lastEventAt >= sinceMs`. A reused sessionId with fresh activity surfaces correctly even when its `createdAt` is days old.
 - **Credential expiry** — UI tracks `expiresAt` (from `aws configure export-credentials`) and 60s-polls for expiry; STS/SigV4 401/403s reroute the user to the credentials form rather than failing silently.
 
+### Lambda + API Gateway MCP Integration
+
+How non-browser clients (a backend Lambda, a Step Functions workflow, an EventBridge consumer, a `curl` script) reach the same MCP tools the UI uses. Lives in [`examples/lambda-mcp-client/`](examples/lambda-mcp-client/) — one Lambda, two transport surfaces, identical payloads.
+
+```mermaid
+flowchart LR
+    subgraph Callers
+      A1["Direct invoke<br/>(SDK / aws lambda invoke /<br/>Step Functions / EventBridge)"]
+      A2["HTTPS caller<br/>(awscurl / http-client.mjs /<br/>API Gateway client)"]
+    end
+
+    APIGW["API Gateway HTTP API (v2)<br/>POST /mcp<br/>AWS_IAM authorizer"]
+    EX["Example Lambda<br/>(nodejs24.x)<br/>action dispatcher"]
+    GW["AgentCore Gateway<br/>(MCP, IAM)"]
+    GWLM["Gateway Lambda Target<br/>(chat / list_sessions /<br/>get_session_history /<br/>list_customers)"]
+    RT["AgentCore Runtime"]
+    MEM["AgentCore Memory"]
+
+    A1 -->|"raw event<br/>{action, ...}"| EX
+    A2 -->|"SigV4 service=execute-api<br/>POST /mcp"| APIGW
+    APIGW -->|"AWS_IAM check →<br/>Lambda proxy v2.0"| EX
+
+    EX -->|"SigV4 service=bedrock-agentcore<br/>tools/call"| GW
+    GW --> GWLM
+    GWLM -->|"chat → InvokeAgentRuntime"| RT
+    GWLM -->|"list_sessions /<br/>get_session_history"| MEM
+    RT -->|"CreateEvent"| MEM
+```
+
+Key points:
+
+- **Same Lambda, two transports.** The handler detects API Gateway proxy events (`requestContext.http`) vs. direct invokes and renders the response accordingly — direct returns raw `{ok, action, result}`, HTTP returns `{statusCode, headers, body}` proxy format.
+- **Two SigV4 chains, different services.** Callers sign against `execute-api` for the HTTP API; the Lambda then signs against `bedrock-agentcore` for the gateway. Each hop authenticates the next.
+- **`AWS_IAM` authorizer on POST /mcp.** Cheaper than REST API ($1/M calls vs $3.50/M), built-in Lambda proxy integration, and no separate authorizer resource — just one flag on the route.
+- **IAM is per-transport.** Caller needs `execute-api:Invoke` on the route ARN; Lambda execution role needs `bedrock-agentcore:InvokeGateway`. The deploy script wires both automatically.
+
+See [examples/lambda-mcp-client/README.md](examples/lambda-mcp-client/README.md) for the payload reference (one table per action), IAM scoping for production, and `awscurl` / `http-client.mjs` recipes.
+
 ### Batch Import Flow (100K+ records)
 ```mermaid
 flowchart LR

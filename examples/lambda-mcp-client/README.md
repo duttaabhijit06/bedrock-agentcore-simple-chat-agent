@@ -140,7 +140,50 @@ aws lambda invoke --function-name agentcore-lambda-example --region us-west-2 \
   ./out.json && cat ./out.json
 ```
 
-**Response:** `{ ok, action: "chat", result: { envelope: { type, message, recommendations?, followups? }, response: string } }`.
+**Response:**
+
+```json
+{
+  "ok": true,
+  "action": "chat",
+  "result": {
+    "envelope": {
+      "type": "answer",
+      "message": "Perfect! Here are 5 tropical balloon sets ideal for your beach party 🏖️",
+      "recommendations": [
+        {
+          "id": "PROD-0012345",
+          "title": "Tropical Beach Balloon Bundle",
+          "price": "29.99",
+          "theme": "Tropical",
+          "category": "Balloons",
+          "image": "https://example.com/img/prod-0012345.jpg",
+          "link": "https://example.com/p/prod-0012345",
+          "description": "Includes 24 latex balloons in beach colors plus a foil palm-tree centerpiece."
+        }
+      ],
+      "followups": [
+        {
+          "id": "theme",
+          "label": "Refine by theme",
+          "options": [
+            { "label": "🏖️ Beach", "value": "Beach" },
+            { "label": "🌺 Tropical", "value": "Tropical" }
+          ]
+        }
+      ],
+      "meta": {
+        "toolsCalled": ["recommend_products"]
+      }
+    },
+    "response": "Perfect! Here are 5 tropical balloon sets..."
+  }
+}
+```
+
+Notes:
+- `envelope.type` is one of `"answer"`, `"followup"`, or `"blocked"`. `recommendations` is only present when the agent ran a product tool; `followups` only when chips make sense for the next turn.
+- `result.response` mirrors `envelope.message` — kept for legacy callers expecting a single text field.
 
 ### `action: "list_sessions"`
 
@@ -182,7 +225,35 @@ aws lambda invoke --function-name agentcore-lambda-example --region us-west-2 \
   ./out.json && cat ./out.json
 ```
 
-**Response:** `{ ok, action, result: { sessions: [{sessionId, actorId, createdAt, lastEventAt, firstPrompt}], totalReturned } }`. Sorted by `lastEventAt` desc.
+**Response:**
+
+```json
+{
+  "ok": true,
+  "action": "list_sessions",
+  "result": {
+    "sessions": [
+      {
+        "sessionId": "35b60f64-45b8-4030-a7ae-b6f69bd4f064",
+        "actorId": "CUST-100005",
+        "createdAt": 1782410478356,
+        "lastEventAt": 1782410478842,
+        "firstPrompt": "What was your last recommendation to me?"
+      },
+      {
+        "sessionId": "session-1782352974782-4whjv93",
+        "actorId": "CUST-100005",
+        "createdAt": 1782352989518,
+        "lastEventAt": 1782353050676,
+        "firstPrompt": "show me some party supplies"
+      }
+    ],
+    "totalReturned": 2
+  }
+}
+```
+
+`createdAt` and `lastEventAt` are epoch ms. Sessions sort by `lastEventAt` desc so a reused sessionId with fresh activity stays at the top even when `createdAt` is days old.
 
 ### `action: "get_session_history"`
 
@@ -223,11 +294,57 @@ aws lambda invoke --function-name agentcore-lambda-example --region us-west-2 \
   ./out.json && cat ./out.json
 ```
 
-**Response:** `{ ok, action, result: { messages: [{role, content, timestamp}], totalReturned } }`. Sorted oldest-first.
+**Response:**
+
+```json
+{
+  "ok": true,
+  "action": "get_session_history",
+  "result": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "show me some party supplies",
+        "timestamp": 1782352989433
+      },
+      {
+        "role": "assistant",
+        "content": "I've found some great Art-themed party supplies tailored to your taste!",
+        "timestamp": 1782352999670
+      },
+      {
+        "role": "user",
+        "content": "show me everything",
+        "timestamp": 1782353039620
+      },
+      {
+        "role": "assistant",
+        "content": "Here's a broad selection of 20 party supplies across themes, colors, and price points!",
+        "timestamp": 1782353050676
+      }
+    ],
+    "totalReturned": 4
+  }
+}
+```
+
+Messages are oldest-first. `timestamp` is epoch ms. Only conversational text is recoverable — product cards and chip envelopes aren't stored in AgentCore Memory, so a resumed UI renders prose only.
 
 ### Error responses
 
-Any handler error returns `{ ok: false, action, error: "<message>" }` (HTTP 400 over the HTTP API). Auth failures from the AgentCore gateway surface as `"... failed (403): Authorization error - Insufficient permissions"` — fix by extending the Lambda execution role's `bedrock-agentcore:InvokeGateway` permission. Auth failures from the HTTP API itself never reach the Lambda; they return `{"message":"Forbidden"}` (caller is missing `execute-api:Invoke` on the route ARN).
+Any handler error returns this shape (HTTP 400 over the HTTP API, raw object over direct invoke):
+
+```json
+{
+  "ok": false,
+  "action": "list_sessions",
+  "error": "list_sessions failed (403): {\"jsonrpc\":\"2.0\",\"id\":\"...\",\"error\":{\"code\":-32002,\"message\":\"Authorization error - Insufficient permissions\"}}"
+}
+```
+
+- **`403 Authorization error - Insufficient permissions`** comes from the **AgentCore gateway** rejecting the Lambda's SigV4 call. Fix by extending the Lambda execution role's `bedrock-agentcore:InvokeGateway` permission.
+- **Caller-side auth failures** on the HTTP API never reach the Lambda; the API returns a plain `{"message":"Forbidden"}` with HTTP 403 (caller is missing `execute-api:Invoke` on the route ARN).
+- **Validation errors** (missing required fields, bad action name) return `error: "actorId and sessionId required for action=get_session_history"` and similar.
 
 ## Invoke
 

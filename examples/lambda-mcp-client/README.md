@@ -94,7 +94,7 @@ Other env-var overrides:
 
 ## Payload reference
 
-The Lambda accepts the same payload shape on both transports — `aws lambda invoke` (direct) and `POST /mcp` on the HTTP API (HTTP body). Pick an `action`, fill in its required fields, and optionally set anything from the optional column.
+The Lambda accepts the same payload shape on both transports — `aws lambda invoke` (direct) and `POST /mcp` on the HTTP API (HTTP body). Pick an `action`, fill in its required fields, and optionally set anything from the optional column. Replace `$URL` with the HTTP API URL `deploy.sh` prints (e.g. `https://abc123def4.execute-api.us-west-2.amazonaws.com/prod/mcp`).
 
 ### `action: "chat"`
 
@@ -107,6 +107,38 @@ Send a prompt to the agent and get back a structured ChatResponse envelope.
 | `actorId` | no | string | — | Customer / user ID. Enables profile-aware personalization. Sent to the runtime as `userId`. |
 | `sessionId` | no | string | (random) | Reuse a sessionId so turns accrue into the same AgentCore Memory session. |
 | `conversationHistory` | no | `[{role, content}]` | `[]` | Prior turns to seed context for stateless callers. |
+
+**Request payload:**
+
+```json
+{
+  "action": "chat",
+  "prompt": "Show me a balloon set for a beach party",
+  "actorId": "CUST-100005",
+  "sessionId": "session-from-some-orchestrator",
+  "conversationHistory": [
+    { "role": "user", "content": "I'm planning a kids' birthday" },
+    { "role": "assistant", "content": "Got it - any theme in mind?" }
+  ]
+}
+```
+
+**HTTP API (`awscurl`):**
+
+```bash
+awscurl --service execute-api --region us-west-2 -X POST \
+  -d '{"action":"chat","prompt":"Show me a balloon set for a beach party","actorId":"CUST-100005"}' \
+  $URL
+```
+
+**Direct Lambda invoke:**
+
+```bash
+aws lambda invoke --function-name agentcore-lambda-example --region us-west-2 \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"action":"chat","prompt":"Show me a balloon set for a beach party","actorId":"CUST-100005"}' \
+  ./out.json && cat ./out.json
+```
 
 **Response:** `{ ok, action: "chat", result: { envelope: { type, message, recommendations?, followups? }, response: string } }`.
 
@@ -122,6 +154,34 @@ List a customer's recent conversations, ordered by most-recent activity.
 | `sinceMs` | no | number | (derived) | Explicit epoch-ms lower bound on `lastEventAt`. Takes precedence over `windowHours`. |
 | `maxSessions` | no | number | `20` | Cap on returned sessions (hard cap 100). |
 
+**Request payload:**
+
+```json
+{
+  "action": "list_sessions",
+  "actorId": "CUST-100005",
+  "windowHours": 48,
+  "maxSessions": 20
+}
+```
+
+**HTTP API (`awscurl`):**
+
+```bash
+awscurl --service execute-api --region us-west-2 -X POST \
+  -d '{"action":"list_sessions","actorId":"CUST-100005","windowHours":48,"maxSessions":20}' \
+  $URL
+```
+
+**Direct Lambda invoke:**
+
+```bash
+aws lambda invoke --function-name agentcore-lambda-example --region us-west-2 \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"action":"list_sessions","actorId":"CUST-100005","windowHours":48,"maxSessions":20}' \
+  ./out.json && cat ./out.json
+```
+
 **Response:** `{ ok, action, result: { sessions: [{sessionId, actorId, createdAt, lastEventAt, firstPrompt}], totalReturned } }`. Sorted by `lastEventAt` desc.
 
 ### `action: "get_session_history"`
@@ -134,6 +194,34 @@ Fetch the full user/assistant timeline for a single session.
 | `actorId` | yes | string | — | The customer / user identifier. |
 | `sessionId` | yes | string | — | The session whose events to return. |
 | `maxResults` | no | number | `100` | Cap on returned events. |
+
+**Request payload:**
+
+```json
+{
+  "action": "get_session_history",
+  "actorId": "CUST-100005",
+  "sessionId": "session-1780951267383-7bm7iut",
+  "maxResults": 100
+}
+```
+
+**HTTP API (`awscurl`):**
+
+```bash
+awscurl --service execute-api --region us-west-2 -X POST \
+  -d '{"action":"get_session_history","actorId":"CUST-100005","sessionId":"session-1780951267383-7bm7iut"}' \
+  $URL
+```
+
+**Direct Lambda invoke:**
+
+```bash
+aws lambda invoke --function-name agentcore-lambda-example --region us-west-2 \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"action":"get_session_history","actorId":"CUST-100005","sessionId":"session-1780951267383-7bm7iut"}' \
+  ./out.json && cat ./out.json
+```
 
 **Response:** `{ ok, action, result: { messages: [{role, content, timestamp}], totalReturned } }`. Sorted oldest-first.
 

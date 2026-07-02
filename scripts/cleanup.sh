@@ -23,6 +23,7 @@ VECTOR_BUCKET_NAME="${VECTOR_BUCKET_NAME:-party-supply-vectors}"
 LAMBDA_NAME="party-supply-gateway-handler"
 LAMBDA_ROLE_NAME="party-supply-lambda-role"
 PROMPTS_TABLE_NAME="${PROMPTS_TABLE_NAME:-party-supply-prompts}"
+MODEL_ID_PARAM_NAME="${MODEL_ID_PARAM_NAME:-/partysupply/agent/model-id}"
 STACK_NAME="AgentCore-PartySupply-default"
 
 echo ""
@@ -35,7 +36,7 @@ echo "╚═══════════════════════�
 echo ""
 
 # ─── Step 1: Delete Gateway Targets ─────────────────────────────────────────
-echo "[1/12] Deleting gateway targets..."
+echo "[1/13] Deleting gateway targets..."
 
 GATEWAY_ID=$(aws bedrock-agentcore-control list-gateways --region "${REGION}" \
   --query "items[?contains(name, 'PartySupply')].gatewayId | [0]" \
@@ -58,7 +59,7 @@ if [ -n "$GATEWAY_ID" ] && [ "$GATEWAY_ID" != "None" ]; then
     done
 
     # ─── Step 2: Wait for target deletion ────────────────────────────────────
-    echo "[2/12] Waiting for target deletion to propagate (15s)..."
+    echo "[2/13] Waiting for target deletion to propagate (15s)..."
     sleep 15
 
     # Verify targets are gone
@@ -72,11 +73,11 @@ if [ -n "$GATEWAY_ID" ] && [ "$GATEWAY_ID" != "None" ]; then
     fi
   else
     echo "  No targets found."
-    echo "[2/12] Skipping wait (no targets)."
+    echo "[2/13] Skipping wait (no targets)."
   fi
 
   # ─── Step 3: Delete Gateway ────────────────────────────────────────────────
-  echo "[3/12] Deleting gateway: ${GATEWAY_ID}"
+  echo "[3/13] Deleting gateway: ${GATEWAY_ID}"
   aws bedrock-agentcore-control delete-gateway \
     --gateway-identifier "${GATEWAY_ID}" \
     --region "${REGION}" 2>/dev/null || echo "  (failed or already deleted)"
@@ -84,12 +85,12 @@ if [ -n "$GATEWAY_ID" ] && [ "$GATEWAY_ID" != "None" ]; then
   sleep 10
 else
   echo "  No gateway found."
-  echo "[2/12] Skipping (no gateway)."
-  echo "[3/12] Skipping (no gateway)."
+  echo "[2/13] Skipping (no gateway)."
+  echo "[3/13] Skipping (no gateway)."
 fi
 
 # ─── Step 4: Delete Lambda ───────────────────────────────────────────────────
-echo "[4/12] Deleting Lambda function: ${LAMBDA_NAME}"
+echo "[4/13] Deleting Lambda function: ${LAMBDA_NAME}"
 
 # Remove the warm-up EventBridge rule + its target before deleting the
 # Lambda. EventBridge requires the target to be removed before the rule
@@ -111,7 +112,7 @@ aws lambda delete-function \
   --region "${REGION}" 2>/dev/null || echo "  (not found)"
 
 # ─── Step 5: Delete Lambda IAM Role ─────────────────────────────────────────
-echo "[5/12] Deleting Lambda IAM role: ${LAMBDA_ROLE_NAME}"
+echo "[5/13] Deleting Lambda IAM role: ${LAMBDA_ROLE_NAME}"
 # Must delete inline policies and detach managed policies before deleting role
 aws iam delete-role-policy \
   --role-name "${LAMBDA_ROLE_NAME}" \
@@ -129,7 +130,7 @@ aws iam delete-role \
   --role-name "${LAMBDA_ROLE_NAME}" 2>/dev/null || echo "  (not found)"
 
 # ─── Step 6: Delete CloudFormation Stack ─────────────────────────────────────
-echo "[6/12] Deleting CloudFormation stack: ${STACK_NAME}"
+echo "[6/13] Deleting CloudFormation stack: ${STACK_NAME}"
 
 # Pre-delete Memory resource (can block stack deletion)
 echo "  Pre-deleting Memory resource..."
@@ -173,7 +174,7 @@ else
 fi
 
 # ─── Step 7: Delete Guardrail Stack ─────────────────────────────────────────
-echo "[7/12] Deleting Guardrail stack: PartySupply-Guardrail"
+echo "[7/13] Deleting Guardrail stack: PartySupply-Guardrail"
 GUARDRAIL_STACK_STATUS=$(aws cloudformation describe-stacks \
   --stack-name "PartySupply-Guardrail" \
   --region "${REGION}" \
@@ -193,7 +194,7 @@ else
 fi
 
 # ─── Step 8: Delete Batch Async Stack ────────────────────────────────────────
-echo "[8/12] Deleting Batch Async stack: PartySupply-BatchAsync"
+echo "[8/13] Deleting Batch Async stack: PartySupply-BatchAsync"
 BATCH_STACK_STATUS=$(aws cloudformation describe-stacks \
   --stack-name "PartySupply-BatchAsync" \
   --region "${REGION}" \
@@ -213,7 +214,7 @@ else
 fi
 
 # ─── Step 9: Delete S3 Vectors ───────────────────────────────────────────────
-echo "[9/12] Deleting S3 Vectors..."
+echo "[9/13] Deleting S3 Vectors..."
 
 # Check if bucket exists using list and grep (avoids JMESPath quoting issues across platforms)
 BUCKET_EXISTS=$(aws s3vectors list-vector-buckets --region "${REGION}" \
@@ -247,7 +248,7 @@ else
 fi
 
 # ─── Step 10: Delete Batch S3 Bucket ─────────────────────────────────────────
-echo "[10/12] Deleting Batch S3 bucket..."
+echo "[10/13] Deleting Batch S3 bucket..."
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "")
 BATCH_BUCKET_NAME="party-supply-batch-${ACCOUNT_ID}-${REGION}"
 if aws s3api head-bucket --bucket "$BATCH_BUCKET_NAME" 2>/dev/null; then
@@ -262,7 +263,7 @@ fi
 # ─── Step 11: Delete Prompts Table ───────────────────────────────────────────
 # Removes the DynamoDB table used by the runtime to load prompt sections
 # from agent/prompts.md. Local prompts.md is preserved (lives in git).
-echo "[11/12] Deleting prompts table: ${PROMPTS_TABLE_NAME}"
+echo "[11/13] Deleting prompts table: ${PROMPTS_TABLE_NAME}"
 if aws dynamodb describe-table --table-name "${PROMPTS_TABLE_NAME}" --region "${REGION}" >/dev/null 2>&1; then
   aws dynamodb delete-table --table-name "${PROMPTS_TABLE_NAME}" --region "${REGION}" >/dev/null \
     && echo "  Table deletion initiated." \
@@ -271,8 +272,21 @@ else
   echo "  Prompts table does not exist."
 fi
 
-# ─── Step 12: Clean Local Artifacts ──────────────────────────────────────────
-echo "[12/12] Cleaning local artifacts..."
+# ─── Step 12: Delete Model ID SSM Parameter ──────────────────────────────────
+# Removes the parameter used by the runtime to hot-swap the Bedrock model.
+# MSYS_NO_PATHCONV=1: Git Bash otherwise rewrites the leading `/` as a
+# Windows drive path and AWS rejects it.
+echo "[12/13] Deleting model-id SSM parameter: ${MODEL_ID_PARAM_NAME}"
+if MSYS_NO_PATHCONV=1 aws ssm get-parameter --name "${MODEL_ID_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1; then
+  MSYS_NO_PATHCONV=1 aws ssm delete-parameter --name "${MODEL_ID_PARAM_NAME}" --region "${REGION}" >/dev/null \
+    && echo "  Parameter deleted." \
+    || echo "  (could not delete parameter)"
+else
+  echo "  Parameter does not exist."
+fi
+
+# ─── Step 13: Clean Local Artifacts ──────────────────────────────────────────
+echo "[13/13] Cleaning local artifacts..."
 rm -f seed-data/*.json
 rm -rf agentcore/cdk/cdk.out
 rm -rf agentcore/.cli

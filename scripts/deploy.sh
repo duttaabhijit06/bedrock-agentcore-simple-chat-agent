@@ -48,6 +48,11 @@ VECTOR_BUCKET_NAME="${VECTOR_BUCKET_NAME:-party-supply-vectors}"
 LAMBDA_NAME="party-supply-gateway-handler"
 LAMBDA_ROLE_NAME="party-supply-lambda-role"
 PROMPTS_TABLE_NAME="${PROMPTS_TABLE_NAME:-party-supply-prompts}"
+# SSM parameter holding the active Bedrock model ID. Runtime reads this
+# every 60s so operators can swap models without redeploying (see
+# agent/tools/model-config.ts). Path must start with a leading slash.
+MODEL_ID_PARAM_NAME="${MODEL_ID_PARAM_NAME:-/partysupply/agent/model-id}"
+DEFAULT_MODEL_ID="${DEFAULT_MODEL_ID:-us.amazon.nova-pro-v1:0}"
 ACCOUNT_ID=""
 
 # ─── Flags ───────────────────────────────────────────────────────────────────
@@ -475,6 +480,28 @@ step_agent() {
     echo "  Lock file updated."
   fi
 
+  # Ensure the SSM parameter that holds the active model ID exists. We
+  # only put the default value on first-run so operators can change the
+  # value at any time without deploy.sh clobbering it.
+  #
+  # MSYS_NO_PATHCONV=1 disables Git Bash's automatic POSIX-to-Windows
+  # path translation. Without it the leading `/` in the parameter name
+  # gets rewritten as a Windows drive path and AWS rejects it as
+  # "Parameter name must be a fully qualified name."
+  echo "  Ensuring model-id SSM parameter: ${MODEL_ID_PARAM_NAME}"
+  if MSYS_NO_PATHCONV=1 aws ssm get-parameter --name "${MODEL_ID_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1; then
+    CURRENT_MODEL=$(MSYS_NO_PATHCONV=1 aws ssm get-parameter --name "${MODEL_ID_PARAM_NAME}" --region "${REGION}" --query "Parameter.Value" --output text)
+    echo "  (parameter exists, current value: ${CURRENT_MODEL})"
+  else
+    MSYS_NO_PATHCONV=1 aws ssm put-parameter \
+      --name "${MODEL_ID_PARAM_NAME}" \
+      --value "${DEFAULT_MODEL_ID}" \
+      --type String \
+      --description "Bedrock model ID for the Party Supply agent. Change (with --overwrite) to hot-swap models without redeploying." \
+      --region "${REGION}" >/dev/null
+    echo "  Parameter created with default: ${DEFAULT_MODEL_ID}"
+  fi
+
   echo "  Validating configuration..."
   npx agentcore validate
   echo "  Deploying (container build via CodeBuild, ~3-5 min)..."
@@ -545,6 +572,19 @@ step_agent() {
           \"Resource\": \"arn:aws:dynamodb:${REGION}:${ACCOUNT_ID}:table/${PROMPTS_TABLE_NAME}\"
         }]
       }" 2>/dev/null && echo "  Prompts table permissions added." || echo "  (could not update Prompts table permissions)"
+
+    # Add SSM Parameter read access so the runtime can hot-swap the
+    # Bedrock model via /partysupply/agent/model-id without redeploying
+    # the container. See agent/tools/model-config.ts for the client.
+    aws iam put-role-policy --role-name "$RUNTIME_ROLE" --policy-name "ModelIdParamAccess" \
+      --policy-document "{
+        \"Version\": \"2012-10-17\",
+        \"Statement\": [{
+          \"Effect\": \"Allow\",
+          \"Action\": [\"ssm:GetParameter\"],
+          \"Resource\": \"arn:aws:ssm:${REGION}:${ACCOUNT_ID}:parameter${MODEL_ID_PARAM_NAME}\"
+        }]
+      }" 2>/dev/null && echo "  Model ID SSM parameter permissions added." || echo "  (could not update Model ID SSM parameter permissions)"
 
   fi
 

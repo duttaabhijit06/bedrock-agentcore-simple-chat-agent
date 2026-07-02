@@ -39,6 +39,10 @@
         {
           "name": "PROMPTS_TABLE_NAME",
           "value": "party-supply-prompts"
+        },
+        {
+          "name": "BEDROCK_MODEL_ID_PARAM",
+          "value": "/partysupply/agent/model-id"
         }
       ]
     }

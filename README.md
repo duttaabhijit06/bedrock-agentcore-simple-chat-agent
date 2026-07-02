@@ -282,6 +282,42 @@ System prompts live in [`agent/prompts.md`](agent/prompts.md) and are uploaded t
 
 See [docs/customization.md](docs/customization.md) for details on customizing personas, tools, and recommendation behavior.
 
+### Model Selection (SSM-driven, no redeploy)
+
+The active Bedrock model is stored in an **SSM Parameter Store** value (`/partysupply/agent/model-id`), not baked into the container. The runtime polls that parameter every 60 seconds, so switching models — Nova Pro ↔ Claude Sonnet 4.5 ↔ Nova Lite ↔ any other Bedrock model — is a **single CLI command** with no container rebuild.
+
+`./scripts/deploy.sh` creates the parameter with a sensible default on first run (**`us.amazon.nova-pro-v1:0`**) and grants the runtime execution role `ssm:GetParameter` on it. Change the value at any time:
+
+```bash
+# Switch to Claude Sonnet 4.5 (higher quality, higher cost)
+aws ssm put-parameter --region us-west-2 \
+  --name /partysupply/agent/model-id \
+  --value us.anthropic.claude-sonnet-4-5-20250929-v1:0 --overwrite
+
+# Or Nova Lite (cheapest of the tool-capable models)
+aws ssm put-parameter --region us-west-2 \
+  --name /partysupply/agent/model-id \
+  --value us.amazon.nova-lite-v1:0 --overwrite
+
+# Back to Nova Pro (default)
+aws ssm put-parameter --region us-west-2 \
+  --name /partysupply/agent/model-id \
+  --value us.amazon.nova-pro-v1:0 --overwrite
+
+# Verify what's active
+aws ssm get-parameter --region us-west-2 \
+  --name /partysupply/agent/model-id --query "Parameter.Value" --output text
+```
+
+New chats pick up the change within ~60s. In-flight requests keep using whatever they read at the top of their turn (no mid-turn model swaps). If SSM is unreachable or the parameter is missing, the runtime falls back to Nova Pro rather than crashing.
+
+**Before switching between models, confirm two things:**
+
+1. **Model access is enabled.** Bedrock gates model access per-model. Check via `aws bedrock get-foundation-model-availability --model-id amazon.nova-pro-v1:0 --region us-west-2` (swap the model-id for whatever you're switching to). If not enabled, accept the EULA in the Bedrock console → *Model access*.
+2. **Tool-use compatibility.** This agent leans on tool-calling (recommend_products, search_products, etc.). Nova Pro, Nova Lite, and Claude Sonnet 4.5 all support Converse-API tool use; Nova Micro does **not** and will break the agent. Behavior differs subtly per model — watch a few real conversations after switching.
+
+The parameter name is configurable via the `BEDROCK_MODEL_ID_PARAM` env var in `agentcore/agentcore.json` (default `/partysupply/agent/model-id`). Implementation lives in [`agent/tools/model-config.ts`](agent/tools/model-config.ts) — same 60s cache pattern as the prompts loader.
+
 ### Performance Optimizations
 
 - **LRU embedding cache** — repeated queries (chip submissions, common themes) skip the Titan API call entirely (-150-300ms each)

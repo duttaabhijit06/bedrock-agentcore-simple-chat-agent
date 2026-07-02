@@ -38,6 +38,7 @@ import {
   storeConversationEvent,
   retrieveMemories,
 } from "./tools/memory.js";
+import { getModelId } from "./tools/model-config.js";
 import {
   ChatResponse,
   ProductCard,
@@ -453,10 +454,10 @@ async function buildSystemPrompt(
  * Create an Agent with conversation history.
  * Since container may restart between requests, we pass history from UI.
  */
-function createAgentWithHistory(
+async function createAgentWithHistory(
   systemPrompt: string,
   history: Array<{ role: "user" | "assistant"; content: string }>
-): Agent {
+): Promise<Agent> {
   // Convert history to Strands SDK Message format
   const messages = history.map(
     (msg) =>
@@ -480,7 +481,13 @@ function createAgentWithHistory(
       };
     };
   } = {
-    modelId: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    // Model ID is resolved from SSM Parameter Store (see tools/model-config.ts).
+    // Operators can swap models without redeploying by updating the parameter:
+    //   aws ssm put-parameter --name /partysupply/agent/model-id \
+    //     --value us.amazon.nova-pro-v1:0 --overwrite
+    // Change picks up within 60s (in-memory cache TTL). If SSM is unreachable
+    // we fall back to the previous Claude Sonnet 4.5 default so the agent stays up.
+    modelId: await getModelId(),
   };
 
   // Add guardrail if configured via environment variables
@@ -593,7 +600,7 @@ const app = new BedrockAgentCoreApp({
 
       // Create agent with conversation history from UI
       // (Container may restart between requests, so we can't rely on in-memory state)
-      const agent = createAgentWithHistory(systemPrompt, conversationHistory);
+      const agent = await createAgentWithHistory(systemPrompt, conversationHistory);
 
       // Store the user message in long-term memory
       await storeConversationEvent(
@@ -612,12 +619,10 @@ const app = new BedrockAgentCoreApp({
       // Invoke the agent with the new prompt
       const rawResponse = (await agent.invoke(prompt)).toString();
 
-      // Build the response envelope. We accept three shapes from Claude:
-      //   1. Valid JSON envelope              -> use as-is
-      //   2. Markdown-fenced JSON envelope    -> strip fence and parse
-      //   3. Anything else (free prose, etc.) -> coerce into type="answer"
-      // We also detect Bedrock's blockedOutputsMessaging substring and
-      // override to type="blocked" regardless of what Claude wrote.
+      // Build the response envelope. Model-agnostic parser handles
+      // JSON envelopes, markdown-fenced JSON, and reasoning-scratchpad
+      // tags (<thinking>, etc.); coerces bare prose into type="answer".
+      // Also short-circuits to type="blocked" on Bedrock guardrail block.
       const envelope = buildEnvelope(rawResponse);
 
       // Attach product cards from the per-request tool log. The runtime
@@ -658,11 +663,26 @@ const app = new BedrockAgentCoreApp({
 });
 
 /**
- * Coerce whatever Claude returned into a valid ChatResponse envelope.
- * Handles three cases (in order):
- *   1. Bedrock guardrail block message present -> type="blocked"
- *   2. Valid JSON envelope -> use as-is (with stripping of any markdown fence)
- *   3. Anything else -> wrap as type="answer" with the raw text as message
+ * Coerce whatever the model returned into a valid ChatResponse envelope.
+ *
+ * Model-agnostic: different Bedrock models decorate their output in
+ * different ways and we can't rely on any single one behaving nicely.
+ * Observed variants:
+ *
+ *   - Claude Sonnet: bare JSON, sometimes wrapped in ```json``` fences.
+ *   - Nova Pro:      often prefixed with <thinking>...</thinking>, and
+ *                    occasionally emits the envelope as *text inside*
+ *                    the JSON's `message` field rather than as the
+ *                    envelope itself.
+ *   - Llama / Titan: sometimes prose-first "Here's your response: {...}".
+ *
+ * Strategy: strip well-known wrappers, then locate the first JSON object
+ * with a valid ChatResponse shape by scanning candidates. Only fall back
+ * to type="answer" prose if none of the candidates parse.
+ *
+ * Guardrail block detection runs first (before any stripping) because
+ * Bedrock's blockedOutputsMessaging can appear mid-stream and would be
+ * lost if we tried to JSON-parse first.
  */
 function buildEnvelope(raw: string): ChatResponse {
   // 1. Guardrail intervention check. Bedrock's blockedOutputsMessaging
@@ -686,12 +706,56 @@ function buildEnvelope(raw: string): ChatResponse {
     };
   }
 
-  // 2. Try to parse as JSON envelope (with optional markdown fence).
-  let candidate = raw.trim();
-  const fenced = candidate.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-  if (fenced) candidate = fenced[1].trim();
+  // 2. Strip known reasoning-scratchpad tags. Nova emits <thinking>,
+  // some other models emit <scratchpad> or <reflection>. Strip all
+  // variants defensively.
+  let cleaned = raw
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, "")
+    .replace(/<scratchpad>[\s\S]*?<\/scratchpad>/gi, "")
+    .replace(/<reflection>[\s\S]*?<\/reflection>/gi, "")
+    .trim();
+
+  // 3. Try each of these candidates in order:
+  //    a. Content of the first ```json``` (or plain ```) fence.
+  //    b. The full cleaned string.
+  //    c. Longest {...} substring (handles "Here's your answer: {...}").
+  const candidates: string[] = [];
+  const fenced = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+  if (fenced) candidates.push(fenced[1].trim());
+  candidates.push(cleaned);
+  const firstBrace = cleaned.indexOf("{");
+  const lastBrace = cleaned.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    candidates.push(cleaned.slice(firstBrace, lastBrace + 1));
+  }
+
+  for (const candidate of candidates) {
+    const parsed = tryParseEnvelope(candidate);
+    if (parsed) return parsed;
+  }
+
+  // 4. Prose fallback. If we stripped tags but the result is empty or
+  // just whitespace, prefer the original raw so the user sees *something*.
+  const messageBody = cleaned || raw;
+  console.warn("[envelope] Non-JSON output, coercing to type=answer", {
+    preview: raw.slice(0, 200),
+    strippedPreview: cleaned.slice(0, 200),
+  });
+  return {
+    type: "answer",
+    message: messageBody,
+  };
+}
+
+/**
+ * Try to parse a candidate string as a ChatResponse envelope. Returns
+ * null if it isn't valid JSON or doesn't have the right discriminator.
+ */
+function tryParseEnvelope(candidate: string): ChatResponse | null {
+  const trimmed = candidate.trim();
+  if (!trimmed || trimmed[0] !== "{") return null;
   try {
-    const parsed = JSON.parse(candidate) as Partial<ChatResponse>;
+    const parsed = JSON.parse(trimmed) as Partial<ChatResponse>;
     if (
       typeof parsed.type === "string" &&
       typeof parsed.message === "string" &&
@@ -700,19 +764,9 @@ function buildEnvelope(raw: string): ChatResponse {
       return parsed as ChatResponse;
     }
   } catch {
-    // not JSON, fall through to coercion
+    // not JSON, caller will try the next candidate
   }
-
-  // 3. Coerce free-form prose into type="answer". This is the safety net
-  // for when Claude forgets the format - the user still sees something
-  // useful, and we log so you can spot drift in CloudWatch.
-  console.warn("[envelope] Claude returned non-JSON output, coercing to type=answer", {
-    preview: raw.slice(0, 200),
-  });
-  return {
-    type: "answer",
-    message: raw,
-  };
+  return null;
 }
 
 app.run();

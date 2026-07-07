@@ -25,8 +25,12 @@ const VECTOR_BUCKET_NAME =
 // ListSessions / ListEvents calls the UI's history sidebar makes.
 const MEMORY_ID = process.env.MEMORY_ID;
 
-const client = new BedrockAgentCoreClient({ region: REGION });
-const s3vectors = new S3VectorsClient({ region: REGION });
+// Adaptive retry so ThrottlingException on the chat forward path
+// (InvokeAgentRuntime) or on customer-selector ListVectors calls
+// backs off rather than surfacing as a Gateway 5xx.
+const RETRY_CONFIG = { maxAttempts: 10, retryMode: "adaptive" };
+const client = new BedrockAgentCoreClient({ region: REGION, ...RETRY_CONFIG });
+const s3vectors = new S3VectorsClient({ region: REGION, ...RETRY_CONFIG });
 
 // Middleware to force Content-Type: application/json (runtime requires it)
 client.middlewareStack.add(

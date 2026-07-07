@@ -42,7 +42,11 @@ const PARAM_NAME =
 const DEFAULT_MODEL_ID = "us.amazon.nova-pro-v1:0";
 const CACHE_TTL_MS = 60_000;
 
-const ssm = new SSMClient({ region: REGION });
+const ssm = new SSMClient({
+  region: REGION,
+  maxAttempts: 10,
+  retryMode: "adaptive",
+});
 let cached: string | null = null;
 let lastFetchMs = 0;
 

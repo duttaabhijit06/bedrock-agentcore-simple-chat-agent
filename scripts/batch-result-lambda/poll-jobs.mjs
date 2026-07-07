@@ -35,10 +35,14 @@ const REGION = process.env.AWS_REGION;
 const VECTOR_BUCKET = process.env.VECTOR_BUCKET || "party-supply-vectors";
 const BATCH_BUCKET = process.env.BATCH_BUCKET;
 
-const bedrockClient = new BedrockClient({ region: REGION });
-const s3Client = new S3Client({ region: REGION });
-const glueClient = new GlueClient({ region: REGION });
-const s3VectorsClient = new S3VectorsClient({ region: REGION });
+// Adaptive retry so ThrottlingException from Bedrock / S3 Vectors /
+// Glue during high-load imports doesn't fail the poll step. The SDK's
+// exponential backoff waits out most transient throttles automatically.
+const RETRY_CONFIG = { maxAttempts: 10, retryMode: "adaptive" };
+const bedrockClient = new BedrockClient({ region: REGION, ...RETRY_CONFIG });
+const s3Client = new S3Client({ region: REGION, ...RETRY_CONFIG });
+const glueClient = new GlueClient({ region: REGION, ...RETRY_CONFIG });
+const s3VectorsClient = new S3VectorsClient({ region: REGION, ...RETRY_CONFIG });
 
 export const handler = async (event) => {
   console.log("Polling for completed batch jobs...");

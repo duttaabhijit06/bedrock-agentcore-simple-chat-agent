@@ -25,7 +25,15 @@ const REGION = process.env.AWS_REGION || "us-west-2";
 const EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v2:0";
 const OUTPUT_DIR = "./seed-data";
 
-const bedrockClient = new BedrockRuntimeClient({ region: REGION });
+// Adaptive retry so bulk seed generation doesn't fail on transient
+// Bedrock ThrottlingException. Default retry mode is "standard" with 3
+// attempts, which is not enough for backfill-style loops that fire
+// hundreds of InvokeModel calls back-to-back.
+const bedrockClient = new BedrockRuntimeClient({
+  region: REGION,
+  maxAttempts: 10,
+  retryMode: "adaptive",
+});
 
 // ─── Type Definitions ───────────────────────────────────────────────────────
 

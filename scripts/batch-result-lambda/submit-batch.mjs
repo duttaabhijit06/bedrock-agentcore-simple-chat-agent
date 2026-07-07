@@ -28,8 +28,60 @@ const BATCH_BUCKET = process.env.BATCH_BUCKET;
 const BATCH_ROLE_ARN = process.env.BATCH_ROLE_ARN;
 const MODEL_ID = process.env.MODEL_ID || "amazon.titan-embed-text-v2:0";
 
-const bedrockClient = new BedrockClient({ region: REGION });
+// Bedrock's CreateModelInvocationJob has a low concurrent-submission
+// quota (~20/account/region). When products+customers+interactions run
+// in parallel from Step Functions we can easily submit 10+ jobs in a
+// few seconds and get ThrottlingException. Use the SDK's "adaptive"
+// retry mode with a high attempt cap so throttled calls back off and
+// retry rather than surfacing as a Lambda failure.
+const bedrockClient = new BedrockClient({
+  region: REGION,
+  maxAttempts: 10,
+  retryMode: "adaptive",
+});
 const s3Client = new S3Client({ region: REGION });
+
+// Delay between successive CreateModelInvocationJob calls to keep us
+// under the burst quota. 500ms means we submit at most ~2 jobs/sec,
+// which stays well below Bedrock's throttle threshold even when three
+// Step Functions imports run in parallel.
+const SUBMIT_DELAY_MS = 500;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Wrapper around `bedrockClient.send()` that retries on
+ * ThrottlingException / TooManyRequests with exponential backoff.
+ *
+ * The SDK's built-in adaptive retry handles most cases, but for
+ * multi-minute quota resets (Bedrock Batch enforces a
+ * concurrent-jobs-per-account cap) we need to keep retrying longer
+ * than the SDK's default retry window.
+ */
+async function submitJobWithRetry(command) {
+  const MAX_TRIES = 8;
+  let attempt = 0;
+  let delayMs = 1000;
+  while (true) {
+    try {
+      return await bedrockClient.send(command);
+    } catch (err) {
+      const throttled =
+        err?.name === "ThrottlingException" ||
+        err?.name === "TooManyRequestsException" ||
+        err?.$metadata?.httpStatusCode === 429;
+      attempt += 1;
+      if (!throttled || attempt >= MAX_TRIES) throw err;
+      const jitter = Math.floor(Math.random() * 500);
+      const wait = delayMs + jitter;
+      console.warn(
+        `  Throttled by Bedrock (attempt ${attempt}/${MAX_TRIES}). ` +
+          `Sleeping ${wait}ms before retry: ${err.message}`
+      );
+      await sleep(wait);
+      delayMs = Math.min(delayMs * 2, 30_000); // cap at 30s
+    }
+  }
+}
 
 export const handler = async (event) => {
   const { dataType, preparedPath, uploadMode = "upsert" } = event;
@@ -95,7 +147,7 @@ export const handler = async (event) => {
     console.log(`    Input: s3://${bucket}/${inputKey}`);
 
     try {
-      const response = await bedrockClient.send(
+      const response = await submitJobWithRetry(
         new CreateModelInvocationJobCommand({
           jobName: jobName,
           roleArn: BATCH_ROLE_ARN,
@@ -125,6 +177,10 @@ export const handler = async (event) => {
       console.error(`    Failed to submit job: ${error.message}`);
       throw error;
     }
+
+    // Space out submissions so we don't burst-hit the Bedrock quota.
+    // Skip the final delay since we've already submitted the last chunk.
+    await sleep(SUBMIT_DELAY_MS);
   }
 
   // Save manifest for poll-jobs Lambda

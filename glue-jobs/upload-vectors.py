@@ -44,8 +44,19 @@ print(f"Batch output: {batch_output_path}")
 print(f"Raw data: {raw_data_path}")
 print(f"Upload mode: {upload_mode}")
 
-s3_client = boto3.client('s3', region_name=region)
-s3vectors_client = boto3.client('s3vectors', region_name=region)
+from botocore.config import Config
+
+# S3 Vectors' PutVectors is throttleable when many chunks upload in
+# parallel (Glue Python Shell scales out and the batch-result Lambdas
+# don't coordinate submission rate across data types). Configure the
+# boto3 client with adaptive retry so throttled calls back off and
+# retry rather than surfacing as a Glue job failure.
+_boto_cfg = Config(
+    region_name=region,
+    retries={'max_attempts': 10, 'mode': 'adaptive'},
+)
+s3_client = boto3.client('s3', config=_boto_cfg)
+s3vectors_client = boto3.client('s3vectors', config=_boto_cfg)
 
 index_name = f"{data_type}-index"
 BATCH_SIZE = 100
@@ -266,12 +277,42 @@ def upload_batch(vectors):
         'metadata': v['metadata']
     } for v in deduped]
 
-    s3vectors_client.put_vectors(
-        vectorBucketName=vector_bucket,
-        indexName=index_name,
-        vectors=payload
-    )
+    # Retry envelope around the SDK's built-in adaptive retry. S3 Vectors
+    # can throttle for multi-second bursts when several Glue workers
+    # (or several parallel imports) submit at once. We keep retrying with
+    # exponential backoff so ephemeral throttles don't fail the whole job.
+    from botocore.exceptions import ClientError
+    import time
+    import random
 
+    max_attempts = 8
+    delay_s = 1.0
+    for attempt in range(1, max_attempts + 1):
+        try:
+            s3vectors_client.put_vectors(
+                vectorBucketName=vector_bucket,
+                indexName=index_name,
+                vectors=payload,
+            )
+            return len(deduped)
+        except ClientError as e:
+            code = e.response.get('Error', {}).get('Code', '')
+            throttled = code in (
+                'ThrottlingException',
+                'TooManyRequestsException',
+                'ProvisionedThroughputExceededException',
+                'RequestLimitExceeded',
+            )
+            if not throttled or attempt >= max_attempts:
+                raise
+            wait = delay_s + random.random() * 0.5  # jitter
+            print(
+                f"[put_vectors] Throttled (attempt {attempt}/{max_attempts}, "
+                f"code={code}). Sleeping {wait:.1f}s before retry."
+            )
+            time.sleep(wait)
+            delay_s = min(delay_s * 2, 30.0)  # cap at 30s
+    # Unreachable - loop either returns or raises
     return len(deduped)
 
 

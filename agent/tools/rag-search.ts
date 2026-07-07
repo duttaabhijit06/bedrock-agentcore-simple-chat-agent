@@ -20,8 +20,20 @@ const VECTOR_BUCKET_NAME =
   process.env.VECTOR_BUCKET_NAME || "party-supply-vectors";
 const EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v2:0";
 
-const bedrockClient = new BedrockRuntimeClient({ region: REGION });
-const s3VectorsClient = new S3VectorsClient({ region: REGION });
+// Adaptive retry so a burst of chat traffic that exceeds the Titan
+// embedding TPS limit doesn't surface as a user-facing failure. The
+// SDK's exponential backoff smooths out throttling on both InvokeModel
+// (Titan Embed) and S3 Vectors QueryVectors.
+const bedrockClient = new BedrockRuntimeClient({
+  region: REGION,
+  maxAttempts: 10,
+  retryMode: "adaptive",
+});
+const s3VectorsClient = new S3VectorsClient({
+  region: REGION,
+  maxAttempts: 10,
+  retryMode: "adaptive",
+});
 
 /**
  * In-memory LRU cache for query embeddings.

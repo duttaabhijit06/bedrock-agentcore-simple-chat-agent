@@ -47,7 +47,16 @@ const PROMPT_FALLBACK_PATH = (() => {
   return candidates[0];
 })();
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
+// Adaptive retry so a transient DynamoDB throttle doesn't fail the
+// 60s prompt-cache refresh - we'd rather serve a slightly stale prompt
+// than crash the request path.
+const ddb = DynamoDBDocumentClient.from(
+  new DynamoDBClient({
+    region: REGION,
+    maxAttempts: 10,
+    retryMode: "adaptive",
+  })
+);
 
 const SECTION_RE = /<!--\s*@section:\s*([A-Z_]+)\s*-->/g;
 

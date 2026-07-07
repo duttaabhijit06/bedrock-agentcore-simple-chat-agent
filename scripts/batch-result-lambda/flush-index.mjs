@@ -19,7 +19,14 @@ import {
 const REGION = process.env.AWS_REGION;
 const VECTOR_BUCKET = process.env.VECTOR_BUCKET || "party-supply-vectors";
 
-const s3VectorsClient = new S3VectorsClient({ region: REGION });
+// Adaptive retry so a transient ThrottlingException on DeleteIndex or
+// CreateIndex doesn't fail the Step Functions run - the flush is
+// idempotent, so retries are safe.
+const s3VectorsClient = new S3VectorsClient({
+  region: REGION,
+  maxAttempts: 10,
+  retryMode: "adaptive",
+});
 
 export const handler = async (event) => {
   const { dataType } = event;

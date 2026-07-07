@@ -16,7 +16,13 @@ import {
 } from "@aws-sdk/client-bedrock";
 
 const REGION = process.env.AWS_REGION;
-const bedrockClient = new BedrockClient({ region: REGION });
+// Adaptive retry so GetModelInvocationJob polling doesn't fail on
+// Bedrock throttling during high-load imports.
+const bedrockClient = new BedrockClient({
+  region: REGION,
+  maxAttempts: 10,
+  retryMode: "adaptive",
+});
 
 export const handler = async (event) => {
   const { jobs } = event;

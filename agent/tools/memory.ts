@@ -21,7 +21,14 @@ const REGION = process.env.AWS_REGION || "us-west-2";
 // Memory ID includes the project prefix and suffix added by AgentCore
 const MEMORY_ID = process.env.MEMORY_ID || "PartySupply_PartySupplyMemory-X26wfJ8Qci";
 
-const client = new BedrockAgentCoreClient({ region: REGION });
+// Adaptive retry so ThrottlingException on CreateEvent / ListEvents
+// (fires on every chat turn) doesn't fail the request. Memory writes
+// are idempotent from the user's perspective, so retries are safe.
+const client = new BedrockAgentCoreClient({
+  region: REGION,
+  maxAttempts: 10,
+  retryMode: "adaptive",
+});
 
 /**
  * Store a conversation event in short-term memory.

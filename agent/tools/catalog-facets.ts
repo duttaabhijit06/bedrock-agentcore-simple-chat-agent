@@ -23,7 +23,13 @@ const REGION = process.env.AWS_REGION || "us-west-2";
 const VECTOR_BUCKET_NAME =
   process.env.VECTOR_BUCKET_NAME || "party-supply-vectors";
 
-const client = new S3VectorsClient({ region: REGION });
+// Adaptive retry so ListVectors sampling doesn't fail on transient
+// S3 Vectors throttling during startup / cache-bust refresh.
+const client = new S3VectorsClient({
+  region: REGION,
+  maxAttempts: 10,
+  retryMode: "adaptive",
+});
 
 export interface CatalogFacets {
   themes: string[];

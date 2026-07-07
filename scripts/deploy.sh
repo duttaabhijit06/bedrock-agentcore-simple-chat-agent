@@ -276,12 +276,24 @@ step_vectors() {
     --vector-bucket-name "${VECTOR_BUCKET_NAME}" \
     --region "${REGION}" 2>/dev/null || echo "  (already exists)"
 
-  # NOTE: --data-type float32 is required
+  # NOTE: --data-type float32 is required.
+  #
+  # All four indexes share the same nonFilterableMetadataKeys config.
+  # products-index and orders-index actually populate name/description/
+  # link/image (which blow past the 2048-byte filterable cap on real
+  # catalogs); customers-index and interactions-index don't write those
+  # fields today but keeping the config identical means schema evolution
+  # is free — if a future migration adds a `description` field to
+  # interactions, it lands in the 40KB non-filterable bucket automatically
+  # rather than triggering PutVectors ValidationException at ingest time.
+  INDEX_METADATA_CONFIG='{"nonFilterableMetadataKeys":["name","description","link","image"]}'
+
   echo "  Creating products-index..."
   aws s3vectors create-index \
     --vector-bucket-name "${VECTOR_BUCKET_NAME}" \
     --index-name "products-index" \
     --dimension 1024 --distance-metric "cosine" --data-type "float32" \
+    --metadata-configuration "${INDEX_METADATA_CONFIG}" \
     --region "${REGION}" 2>/dev/null || echo "  (already exists)"
 
   echo "  Creating orders-index..."
@@ -289,6 +301,7 @@ step_vectors() {
     --vector-bucket-name "${VECTOR_BUCKET_NAME}" \
     --index-name "orders-index" \
     --dimension 1024 --distance-metric "cosine" --data-type "float32" \
+    --metadata-configuration "${INDEX_METADATA_CONFIG}" \
     --region "${REGION}" 2>/dev/null || echo "  (already exists)"
 
   echo "  Creating customers-index..."
@@ -296,6 +309,7 @@ step_vectors() {
     --vector-bucket-name "${VECTOR_BUCKET_NAME}" \
     --index-name "customers-index" \
     --dimension 1024 --distance-metric "cosine" --data-type "float32" \
+    --metadata-configuration "${INDEX_METADATA_CONFIG}" \
     --region "${REGION}" 2>/dev/null || echo "  (already exists)"
 
   # Interactions index holds embedded user-item events (view, add_to_cart,
@@ -307,6 +321,7 @@ step_vectors() {
     --vector-bucket-name "${VECTOR_BUCKET_NAME}" \
     --index-name "interactions-index" \
     --dimension 1024 --distance-metric "cosine" --data-type "float32" \
+    --metadata-configuration "${INDEX_METADATA_CONFIG}" \
     --region "${REGION}" 2>/dev/null || echo "  (already exists)"
 
   echo "  Waiting for indexes to become active..."

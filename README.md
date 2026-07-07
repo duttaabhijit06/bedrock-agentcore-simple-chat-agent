@@ -120,6 +120,16 @@ flowchart LR
 - Parallel Glue uploads (up to 10 concurrent)
 - ~25 min for 123K products end-to-end
 
+#### S3 Vectors metadata split
+
+S3 Vectors imposes a **2048-byte cap on filterable metadata per record** and a separate 40KB budget for non-filterable metadata. Long text fields like `name`, `description`, `link`, and `image` easily blow the filterable cap on real catalogs, causing `PutVectors ValidationException: Filterable metadata must have at most 2048 bytes`.
+
+**All four indexes** (`products-index`, `orders-index`, `customers-index`, `interactions-index`) are created with an identical `nonFilterableMetadataKeys` config that reserves those four keys for the 40KB non-filterable bucket. Uniform config across indexes means schema evolution is free — if a future migration adds a `description` field to interactions or a `notes` field to customers, it lands in the correct bucket automatically. Fields still round-trip on `QueryVectors`; they just can't be used in server-side `filter=` expressions (which the agent doesn't do anyway — all filtering is client-side).
+
+The Glue upload job (`glue-jobs/upload-vectors.py`) also runs a safety-net truncator (`enforce_filterable_cap`) that trims the longest filterable string field iteratively if any record's filterable half still exceeds 1800 bytes (buffer under the 2048 limit). This protects against pathologically-tagged records with many long enum values.
+
+**If you migrated from an older index without the split:** run `./scripts/flush-indexes.sh` to recreate all four indexes with the new metadata config, then re-import your data. `flush-indexes.sh` applies the same config to every index.
+
 ### Recommendation Engine
 
 Three dedicated tools handle product recommendations:

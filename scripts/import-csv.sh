@@ -267,11 +267,15 @@ if [[ "$UPLOAD_VECTORS" == true ]]; then
         # Wait a moment for deletion to propagate
         sleep 2
 
-        # Recreate the index
+        # Recreate the index with the standard non-filterable metadata
+        # split. Long-text fields (name/description/link/image) go into
+        # the 40KB non-filterable bucket to avoid the 2KB filterable cap.
+        # All four indexes share this config for uniformity.
         aws s3vectors create-index \
             --vector-bucket-name "${VECTOR_BUCKET_NAME}" \
             --index-name "$index_name" \
             --dimension 1024 --distance-metric "cosine" --data-type "float32" \
+            --metadata-configuration '{"nonFilterableMetadataKeys":["name","description","link","image"]}' \
             --region "${REGION}" 2>/dev/null || echo "    (index may already exist)"
 
         # Wait for index to become active

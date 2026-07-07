@@ -49,7 +49,11 @@ export const handler = async (event) => {
   // Wait for deletion to propagate
   await new Promise((resolve) => setTimeout(resolve, 3000));
 
-  // Create new index
+  // Create new index. All four indexes share the same non-filterable
+  // metadata config so schema changes don't require per-index code
+  // updates - if a future migration adds a `description` field to any
+  // index, it lands in the 40KB non-filterable bucket automatically
+  // instead of tripping the 2KB filterable cap.
   console.log("  Creating new index...");
   await s3VectorsClient.send(
     new CreateIndexCommand({
@@ -58,6 +62,9 @@ export const handler = async (event) => {
       dimension: 1024,
       distanceMetric: "cosine",
       dataType: "float32",
+      metadataConfiguration: {
+        nonFilterableMetadataKeys: ["name", "description", "link", "image"],
+      },
     })
   );
   console.log("  Index created successfully");

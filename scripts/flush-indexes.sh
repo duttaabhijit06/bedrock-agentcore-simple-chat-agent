@@ -10,12 +10,13 @@
 #   ./scripts/flush-indexes.sh --products --customers   # Flush products and customers
 #
 # Options:
-#   --all          Flush all indexes (products, orders, customers)
-#   --products     Flush products-index
-#   --orders       Flush orders-index
-#   --customers    Flush customers-index
-#   --region       AWS region (default: us-west-2)
-#   -h, --help     Show this help message
+#   --all           Flush all indexes (products, orders, customers, interactions)
+#   --products      Flush products-index
+#   --orders        Flush orders-index
+#   --customers     Flush customers-index
+#   --interactions  Flush interactions-index
+#   --region        AWS region (default: us-west-2)
+#   -h, --help      Show this help message
 #
 
 set -e
@@ -33,6 +34,7 @@ VECTOR_BUCKET_NAME="${VECTOR_BUCKET_NAME:-party-supply-vectors}"
 FLUSH_PRODUCTS=false
 FLUSH_ORDERS=false
 FLUSH_CUSTOMERS=false
+FLUSH_INTERACTIONS=false
 FLUSH_ALL=false
 
 # Print usage
@@ -46,12 +48,13 @@ print_usage() {
     echo "  ./scripts/flush-indexes.sh [options]"
     echo ""
     echo -e "${YELLOW}Options:${NC}"
-    echo "  --all          Flush all indexes (products, orders, customers)"
-    echo "  --products     Flush products-index"
-    echo "  --orders       Flush orders-index"
-    echo "  --customers    Flush customers-index"
-    echo "  --region       AWS region (default: us-west-2)"
-    echo "  -h, --help     Show this help message"
+    echo "  --all           Flush all indexes (products, orders, customers, interactions)"
+    echo "  --products      Flush products-index"
+    echo "  --orders        Flush orders-index"
+    echo "  --customers     Flush customers-index"
+    echo "  --interactions  Flush interactions-index"
+    echo "  --region        AWS region (default: us-west-2)"
+    echo "  -h, --help      Show this help message"
     echo ""
     echo -e "${YELLOW}Examples:${NC}"
     echo "  # Flush all indexes"
@@ -88,6 +91,10 @@ while [[ $# -gt 0 ]]; do
             FLUSH_CUSTOMERS=true
             shift
             ;;
+        --interactions)
+            FLUSH_INTERACTIONS=true
+            shift
+            ;;
         --region)
             REGION="$2"
             shift 2
@@ -109,10 +116,11 @@ if [[ "$FLUSH_ALL" == true ]]; then
     FLUSH_PRODUCTS=true
     FLUSH_ORDERS=true
     FLUSH_CUSTOMERS=true
+    FLUSH_INTERACTIONS=true
 fi
 
 # Validate at least one index selected
-if [[ "$FLUSH_PRODUCTS" != true && "$FLUSH_ORDERS" != true && "$FLUSH_CUSTOMERS" != true ]]; then
+if [[ "$FLUSH_PRODUCTS" != true && "$FLUSH_ORDERS" != true && "$FLUSH_CUSTOMERS" != true && "$FLUSH_INTERACTIONS" != true ]]; then
     echo -e "${RED}Error: At least one index must be specified${NC}"
     print_usage
     exit 1
@@ -134,12 +142,16 @@ flush_index() {
     echo "    Waiting for deletion..."
     sleep 3
 
-    # Recreate the index
+    # Recreate the index with the standard non-filterable metadata split.
+    # name/description/link/image go into the 40KB non-filterable bucket
+    # to avoid the 2KB filterable-metadata cap. All four indexes share
+    # this config for uniformity (see scripts/deploy.sh).
     echo "    Recreating index..."
     aws s3vectors create-index \
         --vector-bucket-name "${VECTOR_BUCKET_NAME}" \
         --index-name "$index_name" \
         --dimension 1024 --distance-metric "cosine" --data-type "float32" \
+        --metadata-configuration '{"nonFilterableMetadataKeys":["name","description","link","image"]}' \
         --region "${REGION}" 2>/dev/null || echo "    (index may already exist)"
 
     # Wait for index to become active
@@ -182,6 +194,9 @@ fi
 if [[ "$FLUSH_CUSTOMERS" == true ]]; then
     INDEXES_TO_FLUSH="$INDEXES_TO_FLUSH customers-index"
 fi
+if [[ "$FLUSH_INTERACTIONS" == true ]]; then
+    INDEXES_TO_FLUSH="$INDEXES_TO_FLUSH interactions-index"
+fi
 
 echo -e "Indexes to flush:${GREEN}$INDEXES_TO_FLUSH${NC}"
 echo ""
@@ -209,6 +224,11 @@ fi
 
 if [[ "$FLUSH_CUSTOMERS" == true ]]; then
     flush_index "customers-index"
+    echo ""
+fi
+
+if [[ "$FLUSH_INTERACTIONS" == true ]]; then
+    flush_index "interactions-index"
     echo ""
 fi
 

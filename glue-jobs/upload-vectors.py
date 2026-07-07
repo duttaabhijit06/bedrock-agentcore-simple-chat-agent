@@ -120,12 +120,65 @@ def load_raw_data(bucket, prefix):
     return raw_data
 
 
+# S3 Vectors metadata limits (per index):
+#   - Filterable metadata: 2048 bytes/record (must be small).
+#   - Non-filterable metadata: 40KB/record.
+# products-index and orders-index are created with these keys marked
+# non-filterable (see scripts/deploy.sh and scripts/flush-indexes.sh).
+# The Glue job still needs a safety net for the filterable half so a
+# stray long value can't fail the whole batch.
+NON_FILTERABLE_KEYS = {"name", "description", "link", "image"}
+FILTERABLE_BYTE_CAP = 1800  # headroom vs the 2048 API limit
+
+
+def enforce_filterable_cap(metadata):
+    """Ensure the filterable half of a metadata dict stays under the 2KB
+    S3 Vectors limit. Iteratively trims the longest filterable string
+    field until the JSON-encoded size fits.
+
+    Non-filterable keys (see NON_FILTERABLE_KEYS above) are excluded
+    from the size calculation because they don't count against the
+    filterable budget on indexes created with that config. If the index
+    wasn't created with the split, these fields still count - we log
+    a warning so operators can spot the misconfiguration in CloudWatch.
+    """
+    import json as _json
+
+    def filterable_size():
+        filterable = {k: v for k, v in metadata.items() if k not in NON_FILTERABLE_KEYS}
+        return len(_json.dumps(filterable).encode("utf-8"))
+
+    guard = 20  # bound the loop so a pathological record can't hang the job
+    while filterable_size() > FILTERABLE_BYTE_CAP and guard > 0:
+        guard -= 1
+        # Find the longest *filterable* string field to trim
+        candidates = [
+            (k, v) for k, v in metadata.items()
+            if k not in NON_FILTERABLE_KEYS and isinstance(v, str) and len(v) > 20
+        ]
+        if not candidates:
+            print(
+                f"[metadata-cap] Cannot trim further; filterable size {filterable_size()}B "
+                f"still exceeds {FILTERABLE_BYTE_CAP}B. Non-string fields dominate."
+            )
+            break
+        biggest_key, biggest_val = max(candidates, key=lambda kv: len(kv[1]))
+        new_len = max(len(biggest_val) - 200, 20)
+        metadata[biggest_key] = biggest_val[:new_len]
+    return metadata
+
+
 def product_to_metadata(product):
     """Convert product to S3 Vectors metadata.
 
     Preserves LINK and IMAGE_LINK so the chat UI can render product cards
     with clickable titles and thumbnails. URLs aren't truncated since
     cropping mid-URL produces a 404; we cap at 500 chars instead.
+
+    Large text fields (name/description/link/image) are stored as
+    non-filterable metadata; the index config declares them so and this
+    function keeps them under keys that the enforce_filterable_cap()
+    helper knows to exclude from its budget check.
     """
     metadata = {
         'name': str(product.get('name') or product.get('TITLE') or '')[:500],
@@ -145,7 +198,7 @@ def product_to_metadata(product):
         if val:
             metadata[field] = str(val)[:100]
 
-    return metadata
+    return enforce_filterable_cap(metadata)
 
 
 def customer_to_metadata(customer):
@@ -167,7 +220,7 @@ def customer_to_metadata(customer):
     if spend is not None:
         metadata['lifetimeSpend'] = str(spend)
 
-    return metadata
+    return enforce_filterable_cap(metadata)
 
 
 def interaction_to_metadata(interaction):
@@ -193,7 +246,7 @@ def interaction_to_metadata(interaction):
         if val is not None and str(val).strip():
             metadata[field] = str(val).strip()[:100]
 
-    return metadata
+    return enforce_filterable_cap(metadata)
 
 
 def upload_batch(vectors):

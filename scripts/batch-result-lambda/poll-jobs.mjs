@@ -278,7 +278,10 @@ async function flushIndex(dataType) {
   // Wait for deletion to propagate
   await new Promise((resolve) => setTimeout(resolve, 2000));
 
-  // Create new index
+  // Create new index. All four indexes share the same non-filterable
+  // metadata config so schema evolution is free — if a future migration
+  // adds long-text fields to any index, they land in the 40KB
+  // non-filterable bucket instead of tripping the 2KB filterable cap.
   await s3VectorsClient.send(
     new CreateIndexCommand({
       vectorBucketName: VECTOR_BUCKET,
@@ -286,6 +289,9 @@ async function flushIndex(dataType) {
       dimension: 1024,
       distanceMetric: "cosine",
       dataType: "float32",
+      metadataConfiguration: {
+        nonFilterableMetadataKeys: ["name", "description", "link", "image"],
+      },
     })
   );
   console.log(`    Created new index: ${indexName}`);

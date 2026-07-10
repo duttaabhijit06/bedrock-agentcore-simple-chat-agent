@@ -558,7 +558,7 @@ step_agent() {
       --policy-document "{
         \"Version\": \"2012-10-17\",
         \"Statement\": [
-          {\"Effect\": \"Allow\", \"Action\": [\"s3vectors:QueryVectors\",\"s3vectors:GetVectors\",\"s3vectors:ListIndexes\"], \"Resource\": \"arn:aws:s3vectors:${REGION}:${ACCOUNT_ID}:bucket/${VECTOR_BUCKET_NAME}*\"},
+          {\"Effect\": \"Allow\", \"Action\": [\"s3vectors:QueryVectors\",\"s3vectors:GetVectors\",\"s3vectors:ListIndexes\",\"s3vectors:ListVectors\"], \"Resource\": \"arn:aws:s3vectors:${REGION}:${ACCOUNT_ID}:bucket/${VECTOR_BUCKET_NAME}*\"},
           {\"Effect\": \"Allow\", \"Action\": [\"bedrock:InvokeModel\"], \"Resource\": [\"arn:aws:bedrock:${REGION}::foundation-model/*\",\"arn:aws:bedrock:us-*::foundation-model/*\"]},
           {\"Effect\": \"Allow\", \"Action\": [\"bedrock-agentcore:CreateEvent\",\"bedrock-agentcore:ListEvents\",\"bedrock-agentcore:RetrieveMemoryRecords\"], \"Resource\": \"arn:aws:bedrock-agentcore:${REGION}:${ACCOUNT_ID}:*\"}
         ]

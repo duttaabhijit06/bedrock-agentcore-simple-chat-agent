@@ -354,12 +354,42 @@ export function ChatWindow() {
         `✅ Response received (${(responseTimeMs / 1000).toFixed(1)}s)`,
       ]);
 
+      // Card-inheritance fallback: when the model returns type=answer
+      // without calling a recommendation tool (common on refinement /
+      // chip-answer turns with Nova - it narrates products in prose
+      // from conversation context instead of re-querying), we inherit
+      // the most recent assistant message's cards so the UI still has
+      // something clickable. Only fires when the current turn has zero
+      // cards AND the model didn't call any tool - a real "no results"
+      // reply from a tool that returned an empty list won't be masked.
+      let inheritedRecommendations: ProductCard[] | undefined;
+      const modelReturnedNoCards =
+        !envelope.recommendations || envelope.recommendations.length === 0;
+      const modelCalledNoTools =
+        !envelope.meta?.toolsCalled || envelope.meta.toolsCalled.length === 0;
+      if (envelope.type === "answer" && modelReturnedNoCards && modelCalledNoTools) {
+        const lastAssistantWithCards = [...messages]
+          .reverse()
+          .find(
+            (m) =>
+              m.role === "assistant" &&
+              m.recommendations &&
+              m.recommendations.length > 0
+          );
+        if (lastAssistantWithCards?.recommendations?.length) {
+          inheritedRecommendations = lastAssistantWithCards.recommendations;
+          console.log(
+            `[cards] Inheriting ${inheritedRecommendations.length} cards from previous turn (model didn't call any tool this turn).`
+          );
+        }
+      }
+
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
         content: envelope.message,
         responseType: envelope.type,
-        recommendations: envelope.recommendations,
+        recommendations: envelope.recommendations || inheritedRecommendations,
         followups: envelope.followups,
         timestamp: new Date(),
         metadata: {

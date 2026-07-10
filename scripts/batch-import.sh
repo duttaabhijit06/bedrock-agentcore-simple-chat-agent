@@ -146,12 +146,34 @@ get_account_id() {
 downsample_interactions() {
   local input_csv="$1"
   if [[ -z "$SAMPLE_RATE" && -z "$SINCE_DAYS" ]]; then
+    # No downsampling requested - pass the original path through. Only
+    # thing we write to stdout is the path (see note below).
     echo "$input_csv"
     return 0
   fi
 
+  # CRITICAL: This function's stdout is captured by the caller via
+  # $(downsample_interactions ...), so *only* the final path may go to
+  # stdout. All diagnostic output must go to stderr - hence the >&2
+  # redirects on log() calls below. Regression bug: prior version let
+  # log lines leak into the captured path.
+
+  # Write the downsampled CSV into <workspace>/uploads/tmp/ rather than
+  # /tmp. Two reasons:
+  #  1. /tmp on Git Bash / Windows resolves to a POSIX path that AWS CLI
+  #     (a native Windows binary) cannot read — same class of bug as
+  #     several earlier fixes.
+  #  2. Keeping test artifacts inside the workspace makes them easy to
+  #     inspect, gitignore (already covered by uploads/*.csv), and clean
+  #     up predictably.
+  # SCRIPT_DIR resolves relative to this file so the path is stable
+  # regardless of the caller's cwd.
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local tmp_dir="${script_dir}/../uploads/tmp"
+  mkdir -p "$tmp_dir"
   local tmp_csv
-  tmp_csv="$(mktemp -t interactions-downsampled.XXXXXX.csv 2>/dev/null || echo "/tmp/interactions-downsampled-$$.csv")"
+  tmp_csv="${tmp_dir}/interactions-downsampled-$$-$(date +%s).csv"
 
   local cutoff_epoch=""
   if [[ -n "$SINCE_DAYS" ]]; then
@@ -160,7 +182,7 @@ downsample_interactions() {
     cutoff_epoch=$(( now_epoch - SINCE_DAYS * 86400 ))
   fi
 
-  log "  Downsampling interactions: sample-rate=${SAMPLE_RATE:-1.0} since-days=${SINCE_DAYS:-all}"
+  log "  Downsampling interactions: sample-rate=${SAMPLE_RATE:-1.0} since-days=${SINCE_DAYS:-all}" >&2
 
   # awk pass: locate USER_ID, ITEM_ID, TIMESTAMP columns from the header,
   # then apply the two filters. Uses awk's srand+rand for sampling but
@@ -203,8 +225,9 @@ downsample_interactions() {
   local original_rows filtered_rows
   original_rows=$(( $(wc -l < "$input_csv") - 1 ))
   filtered_rows=$(( $(wc -l < "$tmp_csv") - 1 ))
-  log "  Downsampled: ${original_rows} → ${filtered_rows} rows"
+  log "  Downsampled: ${original_rows} → ${filtered_rows} rows" >&2
 
+  # Only the path lands on stdout for capture by the caller.
   echo "$tmp_csv"
 }
 

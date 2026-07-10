@@ -75,6 +75,10 @@ uploads/products.csv
 uploads/customers.csv
 uploads/interactions.csv
 
+# Downsampled temp CSVs written by scripts/batch-import.sh's
+# --sample-rate / --since-days path before S3 upload.
+uploads/tmp/
+
 # Backup files created during local testing (e.g. interactions-25k.csv.bak)
 *.bak
 *.csv.bak

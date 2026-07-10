@@ -194,12 +194,21 @@ export class BatchProcessingStack extends cdk.Stack {
       handler: "submit-batch.handler",
       code: lambda.Code.fromAsset(lambdaCodePath),
       role: lambdaRole,
-      timeout: cdk.Duration.seconds(120),
+      // 15 minutes (Lambda max). The submit path can sit in a retry
+      // loop waiting for the Bedrock concurrent-jobs quota to free up
+      // when multiple imports run in parallel. Without this headroom
+      // the retry budget in submit-batch.mjs would timeout the Lambda
+      // before the quota clears.
+      timeout: cdk.Duration.seconds(900),
       memorySize: 256,
       environment: {
         BATCH_BUCKET: batchBucket.bucketName,
         BATCH_ROLE_ARN: batchInferenceRole.roleArn,
         MODEL_ID: "amazon.titan-embed-text-v2:0",
+        // Concurrent-invoke-model-jobs cap. AWS default quota is 20;
+        // 15 leaves headroom for other batch workloads in the account.
+        // Bump this via CDK if the quota has been raised.
+        MAX_CONCURRENT_JOBS: "15",
       },
     });
 
@@ -248,7 +257,22 @@ export class BatchProcessingStack extends cdk.Stack {
       resultPath: "$.glueResult",
     });
 
-    // Step 2: Submit Bedrock Batch jobs
+    // Step 2: Submit Bedrock Batch jobs.
+    //
+    // The Lambda submits chunks under a concurrency cap
+    // (MAX_CONCURRENT_JOBS, default 15) to stay below the Bedrock
+    // per-account/region concurrent-invoke-model-jobs quota (default 20).
+    // Large inputs may need multiple invocations to submit every chunk:
+    // if the Lambda approaches its 15-min timeout with chunks remaining,
+    // it returns `complete: false` along with continuation state
+    // (baseJobName + submittedChunkKeys + submittedJobs + chunkNumStart),
+    // and this state machine loops back through a wait + re-invoke.
+    //
+    // Result contract:
+    //   complete: bool             - true when every chunk is submitted
+    //   jobs: [{name, arn, ...}]   - all jobs submitted so far
+    //   manifestName: string       - shared across invocations
+    //   plus continuation fields consumed by the resume path below.
     const submitBatchJobs = new tasks.LambdaInvoke(this, "SubmitBatchJobs", {
       lambdaFunction: submitBatchLambda,
       payload: sfn.TaskInput.fromObject({
@@ -257,11 +281,48 @@ export class BatchProcessingStack extends cdk.Stack {
         uploadMode: sfn.JsonPath.stringAt("$.uploadMode"),
       }),
       resultSelector: {
+        "complete.$": "$.Payload.complete",
         "jobCount.$": "$.Payload.jobCount",
         "manifestName.$": "$.Payload.manifestName",
         "jobs.$": "$.Payload.jobs",
+        "baseJobName.$": "$.Payload.baseJobName",
+        "submittedChunkKeys.$": "$.Payload.submittedChunkKeys",
+        "submittedJobs.$": "$.Payload.submittedJobs",
+        "chunkNumStart.$": "$.Payload.chunkNumStart",
       },
       resultPath: "$.batchResult",
+    });
+
+    // Re-invoke SubmitBatchJobs when the previous call returned
+    // complete=false. Threads continuation state back into the Lambda.
+    const resumeSubmit = new tasks.LambdaInvoke(this, "ResumeSubmitBatchJobs", {
+      lambdaFunction: submitBatchLambda,
+      payload: sfn.TaskInput.fromObject({
+        dataType: sfn.JsonPath.stringAt("$.dataType"),
+        preparedPath: sfn.JsonPath.stringAt("$.outputPath"),
+        uploadMode: sfn.JsonPath.stringAt("$.uploadMode"),
+        baseJobName: sfn.JsonPath.stringAt("$.batchResult.baseJobName"),
+        submittedChunkKeys: sfn.JsonPath.stringAt("$.batchResult.submittedChunkKeys"),
+        submittedJobs: sfn.JsonPath.stringAt("$.batchResult.submittedJobs"),
+        chunkNumStart: sfn.JsonPath.numberAt("$.batchResult.chunkNumStart"),
+      }),
+      resultSelector: {
+        "complete.$": "$.Payload.complete",
+        "jobCount.$": "$.Payload.jobCount",
+        "manifestName.$": "$.Payload.manifestName",
+        "jobs.$": "$.Payload.jobs",
+        "baseJobName.$": "$.Payload.baseJobName",
+        "submittedChunkKeys.$": "$.Payload.submittedChunkKeys",
+        "submittedJobs.$": "$.Payload.submittedJobs",
+        "chunkNumStart.$": "$.Payload.chunkNumStart",
+      },
+      resultPath: "$.batchResult",
+    });
+
+    // Short wait between re-invocations to let currently-running jobs
+    // make progress so a slot might open up.
+    const waitForSubmitSlot = new sfn.Wait(this, "WaitForSubmitSlot", {
+      time: sfn.WaitTime.duration(cdk.Duration.seconds(60)),
     });
 
     // Step 3: Check batch job status
@@ -350,11 +411,22 @@ export class BatchProcessingStack extends cdk.Stack {
       .when(sfn.Condition.booleanEquals("$.checkResult.allComplete", true), checkReplaceMode)
       .otherwise(waitForBatch.next(checkBatchStatus));
 
+    // Loop: if SubmitBatchJobs returned complete=false (hit Lambda
+    // timeout or waited too long for a concurrency slot), wait 60s and
+    // resume with the continuation state.
+    const checkSubmitComplete = new sfn.Choice(this, "CheckSubmitComplete")
+      .when(
+        sfn.Condition.booleanEquals("$.batchResult.complete", true),
+        checkBatchStatus.next(checkComplete)
+      )
+      .otherwise(waitForSubmitSlot.next(resumeSubmit));
+    // Same choice reused after a resume iteration.
+    resumeSubmit.next(checkSubmitComplete);
+
     // Build the state machine
     const definition = runGlueDedup
       .next(submitBatchJobs)
-      .next(checkBatchStatus)
-      .next(checkComplete);
+      .next(checkSubmitComplete);
 
     processChunks.next(successState);
 

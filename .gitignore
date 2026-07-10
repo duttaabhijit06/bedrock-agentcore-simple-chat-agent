@@ -75,6 +75,30 @@ uploads/products.csv
 uploads/customers.csv
 uploads/interactions.csv
 
+# Backup files created during local testing (e.g. interactions-25k.csv.bak)
+*.bak
+*.csv.bak
+
+# Ad-hoc probe / smoke-test JSON output landing in repo root
+/probe.json
+/smoke.json
+/verify.json
+/verify2.json
+/chat*.json
+/out.json
+/final.json
+/retry.json
+/fix-check.json
+/nova.json
+/after.json
+/claude.json
+/baseline.json
+/diag.json
+/post.json
+/ui-followup.json
+/followup.json
+/initial.json
+
 # Local-only AWS credentials helper (pulls EC2 IMDS creds at runtime)
 refresh_aws_credentials.sh
 

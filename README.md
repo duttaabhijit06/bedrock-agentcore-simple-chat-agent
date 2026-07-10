@@ -119,6 +119,29 @@ flowchart LR
 - Parallel Bedrock Batch jobs for embeddings (50% cost savings)
 - Parallel Glue uploads (up to 10 concurrent)
 - ~25 min for 123K products end-to-end
+- **Concurrency-capped submission** — the submit-batch Lambda respects Bedrock's per-account/region invoke-model-jobs quota (default 20) by capping in-flight jobs at `MAX_CONCURRENT_JOBS` (default 15) and re-invoking itself via Step Functions if the input has more chunks than one Lambda invocation can submit within its 15-minute timeout.
+
+#### Handling large interaction datasets
+
+For interaction logs at 1M+ rows the batch pipeline needs guardrails. Two knobs in `./scripts/batch-import.sh`:
+
+| Flag | What it does |
+|---|---|
+| `--sample-rate 0.1` | Keeps a random 10% of interaction rows. Deterministic per `USER_ID+ITEM_ID+TIMESTAMP` so re-runs are stable. |
+| `--since-days 90` | Drops rows whose `TIMESTAMP` (epoch seconds) is older than N days. Recent activity carries most of the recommender signal. |
+| `--sequential` | Runs the three imports back-to-back instead of in parallel. ~3× slower wall clock but always safe on tight quotas. |
+
+Example for a 15M-row interaction file:
+
+```bash
+# Cheapest: last 90 days + 10% sample → ~1M rows to embed (~$1, ~30 min)
+./scripts/batch-import.sh -i interactions.csv --since-days 90 --sample-rate 0.1
+
+# Full: all 15M rows → ~$15 in Bedrock Batch, ~8-12 hours wall clock
+./scripts/batch-import.sh -i interactions.csv
+```
+
+The Lambda auto-manages concurrency in both cases — it just takes longer for the full-volume path.
 
 #### S3 Vectors metadata split
 

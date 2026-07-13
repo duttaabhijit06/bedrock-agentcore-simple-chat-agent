@@ -11,12 +11,13 @@
   "engines": {
     "node": ">=22.0.0"
   },
+  "_awsSdkPinning": "Keep all @aws-sdk/client-* on a single exact version to avoid @smithy/core version skew. Under `^3.700.0`, npm resolves each client to its latest patch independently; a newer client (e.g. client-ssm) can end up importing exports (`makeBuilder`) from an older hoisted @smithy/core that another client pulled in, throwing 'makeBuilder is not a function' at agent startup. Bump every @aws-sdk/client-* + lib-* in lockstep when updating.",
   "dependencies": {
-    "@aws-sdk/client-bedrock-runtime": "^3.700.0",
-    "@aws-sdk/client-dynamodb": "^3.700.0",
-    "@aws-sdk/client-s3vectors": "^3.700.0",
-    "@aws-sdk/client-ssm": "^3.700.0",
-    "@aws-sdk/lib-dynamodb": "^3.700.0",
+    "@aws-sdk/client-bedrock-runtime": "3.1086.0",
+    "@aws-sdk/client-dynamodb": "3.1086.0",
+    "@aws-sdk/client-s3vectors": "3.1086.0",
+    "@aws-sdk/client-ssm": "3.1086.0",
+    "@aws-sdk/lib-dynamodb": "3.1086.0",
     "@aws-sdk/region-config-resolver": "^3.972.15",
     "@opentelemetry/auto-instrumentations-node": "^0.56.0",
     "@strands-agents/sdk": "^0.1.5",

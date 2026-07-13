@@ -4,11 +4,12 @@
   "description": "Lambda functions for batch processing pipeline",
   "type": "module",
   "main": "index.mjs",
+  "_awsSdkPinning": "Keep all @aws-sdk/client-* on a single exact version. Different clients resolving to different @smithy/core versions causes 'makeBuilder is not a function' at Lambda cold start. Bump every client-* in lockstep.",
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.600.0",
-    "@aws-sdk/client-bedrock": "^3.600.0",
-    "@aws-sdk/client-glue": "^3.600.0",
-    "@aws-sdk/client-s3vectors": "^3.600.0",
-    "@aws-sdk/client-sts": "^3.600.0"
+    "@aws-sdk/client-s3": "3.1086.0",
+    "@aws-sdk/client-bedrock": "3.1086.0",
+    "@aws-sdk/client-glue": "3.1086.0",
+    "@aws-sdk/client-s3vectors": "3.1086.0",
+    "@aws-sdk/client-sts": "3.1086.0"
   }
 }
